@@ -1,0 +1,152 @@
+{
+  "root": {
+    "id": "SYSTEM",
+    "sample_system": "EXAMPLE_PUBLIC"
+  },
+  "nodes": [
+    {
+      "id": "w1a2b3",
+      "parent": "SYSTEM",
+      "class": "Wafer",
+      "entry_created_date": "20260423_090000",
+      "properties": {
+        "material": "Si",
+        "substrate_material": "Si (100)",
+        "name": "Wafer-A"
+      }
+    },
+    {
+      "id": "w4d5e6",
+      "parent": "SYSTEM",
+      "class": "Wafer",
+      "entry_created_date": "20260423_090500",
+      "properties": {
+        "material": "SiC",
+        "substrate_material": "4H-SiC",
+        "name": "Wafer-B"
+      }
+    },
+    {
+      "id": "c1f2a3",
+      "parent": "w1a2b3",
+      "class": "Chip",
+      "entry_created_date": "20260423_091000",
+      "properties": {
+        "location": "A3",
+        "shape": "square",
+        "name": "Chip-A3"
+      }
+    },
+    {
+      "id": "c4b5c6",
+      "parent": "w1a2b3",
+      "class": "Chip",
+      "entry_created_date": "20260423_091200",
+      "properties": {
+        "location": "B1",
+        "shape": "rectangle",
+        "name": "Chip-B1"
+      }
+    },
+    {
+      "id": "s1d2e3",
+      "parent": "c1f2a3",
+      "class": "SEM_stub",
+      "entry_created_date": "20260423_091800",
+      "properties": {
+        "stub_diameter": "12 mm",
+        "adhesive": "carbon tape"
+      }
+    },
+    {
+      "id": "p1a1a1",
+      "parent": "s1d2e3",
+      "class": "Pillar_array",
+      "entry_created_date": "20260423_092300",
+      "properties": {
+        "no_pillars": "12",
+        "pitch_um": "20"
+      }
+    },
+    {
+      "id": "t1b2c3",
+      "parent": "s1d2e3",
+      "class": "TEM_lamella",
+      "entry_created_date": "20260423_092900",
+      "properties": {
+        "grid_material": "Cu",
+        "name": "Lamella-01"
+      }
+    },
+    {
+      "id": "a1d2f3",
+      "parent": "t1b2c3",
+      "class": "APT_tip",
+      "entry_created_date": "20260423_093300",
+      "properties": {
+        "name": "APT-tip-01"
+      }
+    },
+    {
+      "id": "Paa101",
+      "parent": "c4b5c6",
+      "class": "Annealing",
+      "entry_created_date": "20260423_094000",
+      "properties": {
+        "temperature_C": "450",
+        "duration": "30 min",
+        "atmosphere": "N2"
+      }
+    },
+    {
+      "id": "Pbb202",
+      "parent": "s1d2e3",
+      "class": "Imaging",
+      "entry_created_date": "20260423_094500",
+      "properties": {
+        "microscope": "SEM-01",
+        "mode": "SE"
+      }
+    },
+    {
+      "id": "Pcc303",
+      "parent": "p1a1a1",
+      "class": "Micromechanical_testing",
+      "entry_created_date": "20260423_095100",
+      "properties": {
+        "test_type": "pillar_compression",
+        "strain_rate": "1e-3 s^-1"
+      }
+    },
+    {
+      "id": "Pdd404",
+      "parent": "w4d5e6",
+      "class": "XRay_analysis",
+      "entry_created_date": "20260423_095800",
+      "properties": {
+        "mode": "XRD theta-2theta",
+        "scan_range_deg": "20-90"
+      }
+    },
+    {
+      "id": "Pee505",
+      "parent": "w4d5e6",
+      "class": "Electrical_measurement",
+      "entry_created_date": "20260423_100300",
+      "properties": {
+        "method": "four_point_probe",
+        "current_mA": "10"
+      }
+    },
+    {
+      "id": "Pff606",
+      "parent": "w4d5e6",
+      "class": "Swissmapper",
+      "entry_created_date": "20260423_100900",
+      "properties": {
+        "recipe": "default",
+        "operator": "demo_user"
+      }
+    }
+  ]
+}

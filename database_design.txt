@@ -1,0 +1,55 @@
+All objects have "date created" attribute
+	maybe "date[s] edited" attribute as well, if edits are allowed.
+	unique hex ID
+
+STRUCTURE
+sample system > object > sub-object > ... > process step
+
+GUI
+- Inform the user of the suggested parents:
+"The [new object] type is typically a child of [list of proposed parents].
+Current parent: [current parent type]."
+- Commit confirmation
+- Always retain previous version (final one per day) in "archive" sub-folder
+
+Maybe store attributes as dictionaries?
+- Then need to have checking of dictionary attributes
+	- "xxx is not an existing dictionary key, did you mean xyx?"
+
+
+object type: 	TEM grid
+planned parent:	stub
+attributes:	grid name
+		grid material
+		post number
+		fabrication date
+
+object type:	wafer
+attributes:	fabrication date
+		substrate material
+		substrate properties
+			n/p-Si
+			doping element
+			thickness
+			grade
+			barrier coating
+		deposition temperature
+
+process step:	TEM imaging
+		methods = CTEM, STEM, EDX
+
+process step:	micropillar testing
+
+object type:	micropillar array
+planned parent:	SEM stub
+		micropillar array
+
+object type:	SEM stub
+planned parent:	wafer
+attributes:	wafer position
+		adhesive
+		stub size
+		
+
+parent class:	sample system
+attributes:	None
