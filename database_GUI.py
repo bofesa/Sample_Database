@@ -1,6 +1,7 @@
 from database_classes import *
 from datetime import datetime
 import colorsys
+import threading
 
 # -------- GUI + Tree persistence utilities --------
 
@@ -35,7 +36,7 @@ def resolve_permitted_children(sample_obj):
 
 # ---------- Serialization ----------
 
-def serialize_tree(tree, filename):
+def serialize_tree(tree, filename, sort_mode=None):
     ''' Save a tree to JSON file '''
     data = {}
     nodes = []
@@ -43,7 +44,8 @@ def serialize_tree(tree, filename):
         if n.tag == "SYSTEM":
             data["root"] = {
                 "id": n.identifier,
-                "sample_system": n.data.get("Sample_System")
+                "sample_system": n.data.get("Sample_System"),
+                "sort_mode": sort_mode or n.data.get("sort_mode", "none")
             }
         else:
             obj = n.data["obj"]
@@ -66,7 +68,8 @@ def deserialize_tree(filename):
         data = json.load(f)
     tree = treelib.Tree()
     root_id = data["root"]["id"]
-    tree.create_node(tag="SYSTEM", identifier=root_id, data={"Sample_System": data["root"]["sample_system"]})
+    sort_mode = data["root"].get("sort_mode", "none")
+    tree.create_node(tag="SYSTEM", identifier=root_id, data={"Sample_System": data["root"]["sample_system"], "sort_mode": sort_mode})
     classes = get_sample_classes()
     # Temporarily suppress key logging to avoid duplicates on load
     for node_spec in data["nodes"]:
@@ -207,18 +210,51 @@ class SampleTreeGUI:
         self.multi_trees = {}
         self.treeview_index = {}
         self.treeview_system_iids = {}
+        self.sort_mode = "none"
+        self.sort_state = {}
+        self.properties_panel = None
+        self.properties_panel_tree = None
 
         main = ttk.Frame(root)
         main.pack(fill="both", expand=True, padx=6, pady=6)
 
+        # Use PanedWindow for resizable split between treeview and properties panel
+        paned_main = ttk.PanedWindow(main, orient="horizontal")
+        paned_main.pack(fill="both", expand=True, pady=6)
+
         # Add a vertical scrollbar to the main treeview
-        treeview_frame = ttk.Frame(main)
-        treeview_frame.pack(fill="both", expand=True, pady=6)
+        treeview_frame = ttk.Frame(paned_main)
         self.treeview = ttk.Treeview(treeview_frame)
         self.treeview.pack(side="left", fill="both", expand=True)
         treeview_scrollbar = ttk.Scrollbar(treeview_frame, orient="vertical", command=self.treeview.yview)
         treeview_scrollbar.pack(side="right", fill="y")
         self.treeview.configure(yscrollcommand=treeview_scrollbar.set)
+        paned_main.add(treeview_frame, weight=3)
+
+        # Create properties panel (right side)
+        self.properties_panel = ttk.Frame(paned_main)
+        ttk.Label(self.properties_panel, text="Properties", font=("TkDefaultFont", 10, "bold")).pack(anchor="w", padx=4, pady=4)
+        properties_frame = ttk.LabelFrame(self.properties_panel, text="Node Properties")
+        properties_frame.pack(fill="both", expand=True, padx=4, pady=2)
+        self.properties_panel_tree = ttk.Treeview(
+            properties_frame,
+            columns=("property", "value"),
+            show="tree",
+            displaycolumns=("property", "value"),
+        )
+        self.properties_panel_tree.column("#0", width=0, stretch=False)
+        self.properties_panel_tree.column("property", width=110, anchor="w")
+        self.properties_panel_tree.column("value", width=180, anchor="w")
+        try:
+            self.properties_panel_tree.tag_configure("section_header", font=("TkDefaultFont", 9, "bold"))
+        except Exception:
+            pass
+        properties_sb = ttk.Scrollbar(properties_frame, orient="vertical", command=self.properties_panel_tree.yview)
+        self.properties_panel_tree.configure(yscrollcommand=properties_sb.set)
+        properties_sb.pack(side="right", fill="y")
+        self.properties_panel_tree.pack(fill="both", expand=True)
+        
+        paned_main.add(self.properties_panel, weight=2)
 
         top_bar = ttk.Frame(main)
         top_bar.pack(fill="x")
@@ -228,13 +264,6 @@ class SampleTreeGUI:
         ttk.Button(top_bar, text="Save Tree", command=self.save_tree).pack(side="left", padx=2)
 
         ttk.Button(top_bar, text="Search", command=self.search_property).pack(side="right", padx=2)
-
-        # # Create the discover button alongside the other top-bar buttons (obsolete when wrapped into exe)
-        # try:
-        #     self.discover_btn = ttk.Button(top_bar, text="Discover required properties", command=self._on_discover_click)
-        #     self.discover_btn.pack(side="left", padx=2)
-        # except Exception:
-        #     self.discover_btn = None
 
         # Rainbow mode is available for single-tree view only.
         self.rainbow_active = False
@@ -257,9 +286,17 @@ class SampleTreeGUI:
         self.class_cb = ttk.Combobox(action_frame, textvariable=self.class_var, width=28, state="readonly")
         self.class_cb.grid(row=1, column=1, sticky="w", padx=2, pady=2)
 
-        ttk.Button(action_frame, text="View Properties", command=self.view_properties).grid(row=2, column=0, padx=2, pady=6, sticky="w")
-        ttk.Button(action_frame, text="Edit Node", command=self.edit_node).grid(row=2, column=1, padx=2, pady=6, sticky="w")
-        ttk.Button(action_frame, text="Create Node", command=self.add_child_node).grid(row=2, column=1, padx=2, pady=6, sticky="e")
+        # Sorting controls
+        sort_frame = ttk.Frame(action_frame)
+        sort_frame.grid(row=2, column=0, columnspan=2, sticky="w", padx=2, pady=4)
+        ttk.Label(sort_frame, text="Sort by:").pack(side="left", padx=2)
+        self.sort_var = tk.StringVar(value="none")
+        ttk.Radiobutton(sort_frame, text="None", variable=self.sort_var, value="none", command=self.on_sort_changed).pack(side="left")
+        ttk.Radiobutton(sort_frame, text="Name", variable=self.sort_var, value="name", command=self.on_sort_changed).pack(side="left")
+        ttk.Radiobutton(sort_frame, text="Date Created", variable=self.sort_var, value="date_created", command=self.on_sort_changed).pack(side="left")
+
+        ttk.Button(action_frame, text="Edit Node", command=self.edit_node).grid(row=3, column=0, padx=2, pady=6, sticky="w")
+        ttk.Button(action_frame, text="Copy Node", command=self.copy_node).grid(row=3, column=1, padx=2, pady=6, sticky="w")
 
         self.status_var = tk.StringVar()
         ttk.Label(main, textvariable=self.status_var, relief="sunken", anchor="w").pack(fill="x")
@@ -273,6 +310,267 @@ class SampleTreeGUI:
 
     def refresh_status(self, msg):
         self.status_var.set(msg)
+
+    def on_sort_changed(self):
+        """Called when sort mode changes"""
+        if self.display_mode == "single":
+            self.sort_mode = self.sort_var.get()
+            self.populate_treeview()
+        elif self.display_mode == "multi":
+            for system_key in self.multi_trees.keys():
+                self.sort_state[system_key] = self.sort_var.get()
+            self.populate_multi_treeview()
+
+    def get_sort_children(self, tree, parent_id):
+        """Get children of a node sorted according to current sort_mode"""
+        children = tree.children(parent_id)
+        sort_mode = self.sort_mode if self.display_mode == "single" else self.sort_var.get()
+        
+        if sort_mode == "none":
+            return children
+        elif sort_mode == "name":
+            return sorted(children, key=lambda node: node.tag.lower())
+        elif sort_mode == "date_created":
+            def get_date(node):
+                try:
+                    obj = node.data.get("obj")
+                    if obj:
+                        return obj.entry_created_date or ""
+                except Exception:
+                    pass
+                return ""
+            return sorted(children, key=get_date)
+        return children
+
+    def update_properties_panel(self, ctx):
+        """Update the properties panel with current node's properties"""
+        for child in self.properties_panel_tree.get_children():
+            self.properties_panel_tree.delete(child)
+        
+        if not ctx or not ctx.get("node"):
+            self.properties_panel_tree.insert("", "end", values=("No node selected", ""))
+            return
+        
+        node = ctx["node"]
+        if node.tag == "SYSTEM":
+            self.properties_panel_tree.insert("", "end", values=("Type", "System Root"))
+            self.properties_panel_tree.insert("", "end", values=("Sample System", node.data.get("Sample_System", "")))
+            return
+        
+        try:
+            obj = node.data.get("obj")
+            if not obj:
+                return
+            
+            self.properties_panel_tree.insert("", "end", values=("Type", obj.__class__.__name__))
+            self.properties_panel_tree.insert("", "end", values=("ID", "" if getattr(obj, "id", None) is None else str(obj.id)))
+            self.properties_panel_tree.insert("", "end", values=("Created", "" if getattr(obj, "entry_created_date", None) is None else str(obj.entry_created_date)))
+            self.properties_panel_tree.insert("", "end", values=("Custom Properties", ""), tags=("section_header",))
+            
+            props = getattr(obj, "properties", {})
+            if isinstance(props, dict):
+                for k in sorted(props.keys(), key=lambda s: s.lower()):
+                    v = props.get(k, None)
+                    try:
+                        display_v = "" if v is None else (v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))
+                    except Exception:
+                        display_v = str(v)
+                    self.properties_panel_tree.insert("", "end", values=(k, display_v))
+        except Exception as e:
+            self.properties_panel_tree.insert("", "end", values=("Error", str(e)))
+
+    def copy_node(self):
+        """Copy the currently selected node to a new destination"""
+        ctx = self._selected_node_context()
+        if not ctx:
+            messagebox.showwarning("Select", "Select a node to copy first.")
+            return
+        
+        if ctx["is_system_root"]:
+            messagebox.showwarning("Not Allowed", "Cannot copy the SYSTEM root node.")
+            return
+        
+        tree_obj = ctx["tree"]
+        node = ctx["node"]
+        obj = node.data.get("obj")
+        if not obj:
+            messagebox.showerror("Error", "Node has no object data.")
+            return
+        
+        class_name = node.tag
+        classes = get_sample_classes()
+        cls = classes.get(class_name)
+        if not cls:
+            messagebox.showerror("Error", f"Class {class_name} not found.")
+            return
+        
+        # Determine required properties from file
+        try:
+            with open("required_properties.txt", "r", encoding="utf-8") as f:
+                txt = f.read().strip()
+                if not txt:
+                    subclass_req_map = {}
+                else:
+                    try:
+                        subclass_req_map = json.loads(txt)
+                        if not isinstance(subclass_req_map, dict):
+                            raise ValueError("JSON root is not an object")
+                    except Exception:
+                        subclass_req_map = {}
+                        for line in txt.splitlines():
+                            line = line.split("#", 1)[0].strip()
+                            if not line:
+                                continue
+                            if ":" in line:
+                                cls_key, vals = line.split(":", 1)
+                            elif "=" in line:
+                                cls_key, vals = line.split("=", 1)
+                            else:
+                                parts = line.split()
+                                if len(parts) == 2:
+                                    cls_key, vals = parts[0], parts[1]
+                                else:
+                                    continue
+                            keys = [k.strip() for k in vals.split(",") if k.strip()]
+                            subclass_req_map[cls_key.strip()] = keys
+        except FileNotFoundError:
+            subclass_req_map = {}
+        required = subclass_req_map.get(class_name, [])
+        
+        # Collect existing keys for dropdown
+        existing_keys = []
+        if os.path.exists("database_keys.txt"):
+            with open("database_keys.txt", "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith(class_name + "_"):
+                        existing_keys.append(line[len(class_name) + 1:])
+        
+        cur_props = obj.properties if isinstance(obj.properties, dict) else {}
+        existing_keys = sorted(set(existing_keys) | set(cur_props.keys()))
+        
+        # Open PropertyEditor with pre-filled values
+        editor = PropertyEditor(self.root, cls, set(existing_keys), required)
+        try:
+            for i, rp in enumerate(required):
+                if i < len(editor.rows):
+                    kv, vv, _cb = editor.rows[i]
+                    kv.set(rp)
+                    vv.set(cur_props.get(rp, ""))
+        except Exception:
+            pass
+        
+        try:
+            opt_props = {k: v for k, v in cur_props.items() if k not in required}
+            opt_index = len(required)
+            for k, v in opt_props.items():
+                if opt_index >= len(editor.rows):
+                    editor.add_optional_row()
+                kv, vv, _cb = editor.rows[opt_index]
+                kv.set(k)
+                vv.set(v)
+                opt_index += 1
+        except Exception:
+            pass
+        
+        self.root.wait_window(editor)
+        if editor.result is None:
+            return
+        
+        # Ask user to select destination parent by showing a dialog
+        parent_options = {}
+        if self.display_mode == "single":
+            tree = self.tree_obj
+            for node_iter in tree.all_nodes_itr():
+                if node_iter.tag == "SYSTEM":
+                    parent_options["SYSTEM (root)"] = (tree, node_iter.identifier)
+                else:
+                    obj_iter = node_iter.data.get("obj")
+                    if obj_iter:
+                        parent_options[f"{node_iter.tag} [{obj_iter.id}]"] = (tree, node_iter.identifier)
+        else:
+            for system_key, info in self.multi_trees.items():
+                tree = info["tree"]
+                file_label = os.path.basename(info["file"])
+                for node_iter in tree.all_nodes_itr():
+                    if node_iter.tag == "SYSTEM":
+                        parent_options[f"{file_label}: SYSTEM (root)"] = (tree, node_iter.identifier, system_key)
+                    else:
+                        obj_iter = node_iter.data.get("obj")
+                        if obj_iter:
+                            parent_options[f"{file_label}: {node_iter.tag} [{obj_iter.id}]"] = (tree, node_iter.identifier, system_key)
+        
+        if not parent_options:
+            messagebox.showwarning("No Parents", "No valid destination parents available.")
+            return
+        
+        # Create selection dialog
+        class DestinationDialog(tk.Toplevel):
+            def __init__(self, master, options):
+                super().__init__(master)
+                self.title("Select Destination Parent")
+                self.geometry("400x300")
+                self.result = None
+                
+                ttk.Label(self, text="Select destination parent:").pack(anchor="w", padx=10, pady=10)
+                
+                self.listbox = tk.Listbox(self, height=12)
+                self.listbox.pack(fill="both", expand=True, padx=10, pady=5)
+                
+                for label in sorted(options.keys()):
+                    self.listbox.insert(tk.END, label)
+                
+                self.options = options
+                
+                btn_frame = ttk.Frame(self)
+                btn_frame.pack(pady=10)
+                ttk.Button(btn_frame, text="OK", command=self.on_ok).pack(side="left", padx=5)
+                ttk.Button(btn_frame, text="Cancel", command=self.on_cancel).pack(side="left", padx=5)
+            
+            def on_ok(self):
+                sel = self.listbox.curselection()
+                if not sel:
+                    messagebox.showwarning("Select", "Please select a destination.")
+                    return
+                label = self.listbox.get(sel[0])
+                self.result = self.options.get(label)
+                self.destroy()
+            
+            def on_cancel(self):
+                self.destroy()
+        
+        dest_dialog = DestinationDialog(self.root, parent_options)
+        self.root.wait_window(dest_dialog)
+        
+        if not dest_dialog.result:
+            return
+        
+        dest_info = dest_dialog.result
+        if len(dest_info) == 3:
+            dest_tree, dest_parent_id, dest_system_key = dest_info
+            dest_ctx_system_key = dest_system_key
+        else:
+            dest_tree, dest_parent_id = dest_info
+            dest_ctx_system_key = ctx["system_key"]
+        
+        # Create new node with same class and properties
+        new_props = editor.result
+        try:
+            new_obj = cls(**new_props)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create new instance: {e}")
+            return
+        
+        dest_tree.create_node(tag=class_name,
+                            identifier=new_obj.id,
+                            parent=dest_parent_id,
+                            data={"obj": new_obj})
+        
+        self._refresh_after_tree_change(system_key=dest_ctx_system_key, focus_node_id=new_obj.id)
+        if self.display_mode == "multi":
+            self.refresh_status(f"Copied {class_name} node.")
+        else:
+            self.refresh_status(f"Copied {class_name} node.")
 
     def _reset_multi_state(self):
         self.multi_trees = {}
@@ -370,7 +668,9 @@ class SampleTreeGUI:
         self._reset_multi_state()
         self.tree_obj = treelib.Tree()
         root_id = "SYSTEM"
-        self.tree_obj.create_node("SYSTEM", root_id, data={"Sample_System": sample_system})
+        self.sort_mode = "none"
+        self.sort_var.set("none")
+        self.tree_obj.create_node("SYSTEM", root_id, data={"Sample_System": sample_system, "sort_mode": "none"})
         self.current_file = filedialog.asksaveasfilename(
             initialdir=TREE_STORAGE_DIR,
             defaultextension=".json",
@@ -379,7 +679,7 @@ class SampleTreeGUI:
         if not self.current_file:
             self.tree_obj = None
             return
-        serialize_tree(self.tree_obj, self.current_file)
+        serialize_tree(self.tree_obj, self.current_file, sort_mode="none")
         self.populate_treeview()
         # hide discover button once a tree exists / is created
         self._hide_discover_button()
@@ -396,6 +696,11 @@ class SampleTreeGUI:
             self.display_mode = "single"
             self._reset_multi_state()
             self.tree_obj = deserialize_tree(filename)
+            # Restore sort mode from tree
+            root_node = self.tree_obj.get_node(self.tree_obj.root)
+            if root_node:
+                self.sort_mode = root_node.data.get("sort_mode", "none")
+                self.sort_var.set(self.sort_mode)
             self.current_file = filename
             self.populate_treeview()
             # hide discover button once a tree is loaded
@@ -429,14 +734,17 @@ class SampleTreeGUI:
                 tree = deserialize_tree(path)
                 system_node = tree.get_node(tree.root)
                 system_name = ""
+                sort_mode = "none"
                 if system_node is not None:
                     system_name = system_node.data.get("Sample_System", "")
+                    sort_mode = system_node.data.get("sort_mode", "none")
                 key = f"{idx:04d}_{os.path.basename(path)}"
                 loaded[key] = {
                     "tree": tree,
                     "file": path,
                     "label": f"{system_name}" if system_name else os.path.basename(path),
                 }
+                self.sort_state[key] = sort_mode
             except Exception as e:
                 failed.append(f"{os.path.basename(path)}: {e}")
 
@@ -448,6 +756,8 @@ class SampleTreeGUI:
         self.tree_obj = None
         self.current_file = None
         self.multi_trees = loaded
+        # Set sort_var to "none" for multi-tree display
+        self.sort_var.set("none")
         try:
             self.rainbow_button.pack(side="left", padx=2)
         except Exception:
@@ -469,8 +779,9 @@ class SampleTreeGUI:
                 messagebox.showwarning("Save", "No trees to save.")
                 return
             saved = 0
-            for info in self.multi_trees.values():
-                serialize_tree(info["tree"], info["file"])
+            for system_key, info in self.multi_trees.items():
+                sort_mode = self.sort_state.get(system_key, "none")
+                serialize_tree(info["tree"], info["file"], sort_mode=sort_mode)
                 saved += 1
             self.refresh_status(f"Saved {saved} trees.")
             return
@@ -484,7 +795,7 @@ class SampleTreeGUI:
                 filetypes=[("JSON Files", "*.json")])
             if not self.current_file:
                 return
-        serialize_tree(self.tree_obj, self.current_file)
+        serialize_tree(self.tree_obj, self.current_file, sort_mode=self.sort_mode)
         self.refresh_status("Tree saved.")
     
     # ---------- Discover Required Properties Option (integrated into GUI) ----------
@@ -628,7 +939,7 @@ class SampleTreeGUI:
                 self.treeview.item(node.identifier, open=True)
             except Exception:
                 pass
-            for child in self.tree_obj.children(node_id):
+            for child in self.get_sort_children(self.tree_obj, node_id):
                 add(child.identifier)
         add(self.tree_obj.root)
         # make sure top-level items are expanded as well
@@ -674,7 +985,7 @@ class SampleTreeGUI:
             self.treeview.insert(parent_iid, "end", iid=node_iid, text=self.node_text(node), tags=tags)
             self.treeview.item(node_iid, open=bool(expand_this_system))
             self.treeview_index[node_iid] = {"system_key": system_key, "node_id": node_id}
-            for child in tree.children(node_id):
+            for child in self.get_sort_children(tree, node_id):
                 add_node(system_key, tree, child.identifier, node_iid, expand_this_system, depth + 1)
 
         try:
@@ -704,7 +1015,7 @@ class SampleTreeGUI:
             self.treeview.insert("", "end", iid=top_iid, text=top_text, tags=top_tags)
             self.treeview.item(top_iid, open=bool(expand_system_key and expand_system_key == system_key))
             self.treeview_index[top_iid] = {"system_key": system_key, "node_id": tree.root}
-            for child in tree.children(tree.root):
+            for child in self.get_sort_children(tree, tree.root):
                 add_node(system_key, tree, child.identifier, top_iid, expand_system_key and expand_system_key == system_key, 1)
 
         if focus_node_id and expand_system_key:
@@ -948,12 +1259,13 @@ class SampleTreeGUI:
             os.makedirs(archive_dir, exist_ok=True)
             ts = datetime.now().strftime("%y%m%d")
             try:
-                for info in self.multi_trees.values():
+                for system_key, info in self.multi_trees.items():
+                    sort_mode = self.sort_state.get(system_key, "none")
                     base = os.path.basename(info["file"])
                     root, ext = os.path.splitext(base)
                     out_name = f"{root}_{ts}{ext}" if ext else f"{root}_{ts}"
                     out_path = os.path.join(archive_dir, out_name)
-                    serialize_tree(info["tree"], out_path)
+                    serialize_tree(info["tree"], out_path, sort_mode=sort_mode)
                 self._clear_loaded_trees()
                 self.refresh_status("Ready")
             except Exception as e:
@@ -981,7 +1293,7 @@ class SampleTreeGUI:
         root, ext = os.path.splitext(base_file)
         new_filename = f"{root}_{ts}{ext}" if ext else f"{root}_{ts}"
         try:
-            serialize_tree(self.tree_obj, new_filename)
+            serialize_tree(self.tree_obj, new_filename, sort_mode=self.sort_mode)
             self.refresh_status(f"Saved as {os.path.basename(new_filename)}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save: {e}")
@@ -998,12 +1310,14 @@ class SampleTreeGUI:
             self.parent_label_var.set("-")
             self.class_cb['values'] = []
             self.class_var.set("")
+            self.update_properties_panel(None)
             return
         parent_label = ctx["node_id"]
         if self.display_mode == "multi":
             parent_label = f"{os.path.basename(ctx['file'])}: {ctx['node_id']}"
         self.parent_label_var.set(parent_label)
         self.populate_child_class_options(ctx["tree"], ctx["node_id"])
+        self.update_properties_panel(ctx)
 
     def populate_child_class_options(self, tree_obj, parent_id):
         if parent_id == tree_obj.root:
@@ -1114,110 +1428,6 @@ class SampleTreeGUI:
             self.refresh_status(f"Added {class_name} node in {os.path.basename(ctx['file'])}.")
         else:
             self.refresh_status(f"Added {class_name} node.")
-
-    def view_properties(self):
-        ctx = self._selected_node_context()
-        if not ctx:
-            messagebox.showwarning("Select", "Select a node first.")
-            return
-        node_id = ctx["node_id"]
-        node = ctx["node"]
-        if node is None:
-            messagebox.showerror("Error", "Selected node not found in tree.")
-            return
-
-        if node.tag == "SYSTEM":
-            info = {"node": "SYSTEM", "Sample_System": node.data.get("Sample_System")}
-        else:
-            obj = node.data.get("obj")
-            if obj is None:
-                messagebox.showerror("Error", "No object data for selected node.")
-                return
-            info = {
-                "class": node.tag,
-                "id": getattr(obj, "id", None),
-                "entry_created_date": getattr(obj, "entry_created_date", None),
-                "properties": getattr(obj, "properties", {})
-            }
-
-        # Table-based viewer window
-        class PropertiesTables(tk.Toplevel):
-            def __init__(self, master, title, summary_dict, prop_keys):
-                super().__init__(master)
-                self.title(title)
-                self.geometry("640x420")
-                self.resizable(True, True)
-
-                container = ttk.Frame(self)
-                container.pack(fill="both", expand=True, padx=8, pady=8)
-
-                # Top table: summary (all non-kwarg values)
-                ttk.Label(container, text="Summary").pack(anchor="w")
-                top_frame = ttk.Frame(container)
-                top_frame.pack(fill="x", pady=(2, 8))
-
-                top_tree = ttk.Treeview(
-                    top_frame,
-                    columns=("property", "value"),
-                    show="tree",  # hide column headings
-                    displaycolumns=("property", "value"),
-                    height=6
-                )
-                # hide the implicit #0 tree column visually
-                top_tree.column("#0", width=0, stretch=False)
-                # top_tree.heading("property", text="Property")
-                # top_tree.heading("value", text="Value")
-                top_tree.column("property", width=220, anchor="w")
-                top_tree.column("value", width=380, anchor="w")
-
-                top_vsb = ttk.Scrollbar(top_frame, orient="vertical", command=top_tree.yview)
-                top_tree.configure(yscrollcommand=top_vsb.set)
-                top_vsb.pack(side="right", fill="y")
-                top_tree.pack(fill="x", expand=True)
-
-                for k, v in summary_dict.items():
-                    top_tree.insert("", "end", values=(k, "" if v is None else str(v)))
-
-                # Bottom table: properties keys and values
-                ttk.Label(container, text="Properties").pack(anchor="w")
-                prop_frame = ttk.Frame(container)
-                prop_frame.pack(fill="both", expand=True)
-
-                prop_tree = ttk.Treeview(prop_frame, columns=("property", "value"), show="tree", displaycolumns=("property", "value"))
-                # hide the implicit #0 tree column visually
-                prop_tree.column("#0", width=0, stretch=False)
-                # prop_tree.heading("property", text="Property")
-                # prop_tree.heading("value", text="Value")
-                prop_tree.column("property", width=220, anchor="w")
-                prop_tree.column("value", width=380, anchor="w")
-
-                prop_vsb = ttk.Scrollbar(prop_frame, orient="vertical", command=prop_tree.yview)
-                prop_tree.configure(yscrollcommand=prop_vsb.set)
-                prop_vsb.pack(side="right", fill="y")
-                prop_tree.pack(fill="both", expand=True)
-
-                if prop_keys:
-                    for k in sorted(prop_keys, key=lambda s: s.lower()):
-                        v = props.get(k, None)
-                        try:
-                            display_v = "" if v is None else (v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))
-                        except Exception:
-                            display_v = str(v)
-                        prop_tree.insert("", "end", values=(k, display_v))
-                else:
-                    prop_tree.insert("", "end", values=("(none)", ""))
-
-                btn_frame = ttk.Frame(self)
-                btn_frame.pack(pady=6)
-                ttk.Button(btn_frame, text="Close", command=self.destroy).pack()
-
-        # Prepare data for tables: summary = all keys except 'properties'; prop_keys = keys inside properties
-        summary = {k: v for k, v in info.items() if k != "properties"}
-        props = info.get("properties", {})
-        prop_keys = list(props.keys()) if isinstance(props, dict) else []
-
-        viewer = PropertiesTables(self.root, f"Properties: {node_id}", summary, prop_keys)
-        self.root.wait_window(viewer)
 
     # ---------- Search Property Window ----------
     def search_property(self):
@@ -1440,40 +1650,77 @@ class SampleTreeGUI:
                 
             def do_search(self):
                 self.results_list.delete(0, tk.END)
-                self.search_btn.config(text="Searching...", state='disabled')
+                self.search_btn.config(state='disabled')
                 self.result_entries = []
                 self.result_texts = []
-
-                try:
-                    if not self.search_sources:
+                self.search_complete = False
+                self.timeout_shown = False
+                self.animate_frame = 0
+                
+                def animate_search_status():
+                    if self.search_complete:
                         return
-
-                    key = self.key_var.get().strip()
-                    if not key:
+                    dots = [".", "..", "..."][self.animate_frame % 3]
+                    self.search_btn.config(text=f"Searching{dots}")
+                    self.animate_frame += 1
+                    if not self.search_complete:
+                        self.after(1000, animate_search_status)
+                
+                def check_timeout():
+                    if self.search_complete:
                         return
+                    if not self.timeout_shown:
+                        self.timeout_shown = True
+                        messagebox.showwarning("Search Timeout", "Search is taking longer than expected (10+ seconds)...", parent=self)
+                    if not self.search_complete:
+                        self.after(10000, check_timeout)
+                
+                def search_thread():
+                    try:
+                        if not self.search_sources:
+                            return
 
-                    node_type = self.type_var.get()
-                    if not self.partial_var.get():
-                        matches = self._collect_matches("exact")
-                    else:
-                        exact_matches = self._collect_matches("exact")
-                        seen_nodes = {(system_key, node_id) for system_key, node_id, *_rest in exact_matches}
-                        normalized_matches = self._collect_matches("substring")
-                        matches = exact_matches[:]
-                        for item in normalized_matches:
-                            if (item[0], item[1]) not in seen_nodes:
-                                matches.append(item)
-                                seen_nodes.add((item[0], item[1]))
+                        key = self.key_var.get().strip()
+                        if not key:
+                            return
 
-                        if not matches:
-                            try_non_contiguous = messagebox.askyesno(
-                                "No matches",
-                                "No exact or normalized partial matches were found. Search for non-contiguous character matches?",
-                                parent=self,
-                            )
-                            if try_non_contiguous:
-                                matches = self._collect_matches("subsequence")
+                        node_type = self.type_var.get()
+                        if not self.partial_var.get():
+                            matches = self._collect_matches("exact")
+                        else:
+                            exact_matches = self._collect_matches("exact")
+                            seen_nodes = {(system_key, node_id) for system_key, node_id, *_rest in exact_matches}
+                            normalized_matches = self._collect_matches("substring")
+                            matches = exact_matches[:]
+                            for item in normalized_matches:
+                                if (item[0], item[1]) not in seen_nodes:
+                                    matches.append(item)
+                                    seen_nodes.add((item[0], item[1]))
 
+                            if not matches:
+                                # For non-contiguous, we need to use after_idle to show dialog
+                                def ask_subsequence():
+                                    try_non_contiguous = messagebox.askyesno(
+                                        "No matches",
+                                        "No exact or normalized partial matches were found. Search for non-contiguous character matches?",
+                                        parent=self,
+                                    )
+                                    if try_non_contiguous:
+                                        nonlocal matches
+                                        matches = self._collect_matches("subsequence")
+                                    update_results()
+                                
+                                self.after_idle(ask_subsequence)
+                                return
+
+                        update_results(matches)
+                    except Exception as e:
+                        self.after_idle(lambda: messagebox.showerror("Error", f"Search error: {e}", parent=self))
+                
+                def update_results(matches=None):
+                    if matches is None:
+                        return
+                    
                     self.result_entries = [
                         {"system_key": system_key, "node_id": node_id}
                         for system_key, node_id, *_rest in matches
@@ -1489,13 +1736,23 @@ class SampleTreeGUI:
                             for system_key, node_id, node_tag, node_id_text, prop_key, prop_value in matches
                         ]
 
+                    self.results_list.delete(0, tk.END)
                     for text in self.result_texts:
                         self.results_list.insert(tk.END, text)
 
                     if not self.result_entries:
                         self.results_list.insert(tk.END, "No matches found.")
-                finally:
+                    
+                    self.search_complete = True
                     self.search_btn.config(text="Search", state='normal')
+                
+                # Start animation and timeout checks
+                self.after(100, animate_search_status)
+                self.after(10000, check_timeout)
+                
+                # Start search in background thread
+                search_thread_obj = threading.Thread(target=search_thread, daemon=True)
+                search_thread_obj.start()
 
             def on_open_node(self, _event):
                 sel = self.results_list.curselection()
@@ -1588,6 +1845,7 @@ class SampleTreeGUI:
 # ---------- Main Launch ----------
 def launch_gui():
     root = tk.Tk()
+    root.geometry("1280x820")
     # action = show_discover_properties_window(root)
     # if action == "discover":
     #     discover_required_properties()
