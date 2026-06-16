@@ -5,7 +5,8 @@ import threading
 
 # -------- GUI + Tree persistence utilities --------
 
-TREE_STORAGE_DIR = "databases"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TREE_STORAGE_DIR = os.path.join(BASE_DIR, "databases")
 os.makedirs(TREE_STORAGE_DIR, exist_ok=True)
 
 # ---------- Reflection / dynamic class discovery ----------
@@ -61,6 +62,15 @@ def serialize_tree(tree, filename, sort_mode=None):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     return filename
+
+def get_class_schema(class_name):
+    try:
+        with open(SCHEMA_JSON_FILE, 'r', encoding='utf-8') as f:
+            schema = json.load(f)
+        cls_schema = schema.get(class_name, {"required": [], "custom": []})
+        return cls_schema.get("required", []), cls_schema.get("custom", [])
+    except Exception:
+        return [], []
 
 def deserialize_tree(filename):
     ''' Load a tree from JSON file '''
@@ -199,10 +209,119 @@ class PropertyEditor(tk.Toplevel):
 
 # ---------- Main GUI ----------
 
+
+class SchemaBrowser(tk.Toplevel):
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("Schema Browser")
+        self.geometry("800x600")
+        self.grab_set()  # Make it modal
+
+        main_paned = ttk.PanedWindow(self, orient="horizontal")
+        main_paned.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Left pane: Class hierarchy
+        left_frame = ttk.Frame(main_paned)
+        main_paned.add(left_frame, weight=1)
+
+        ttk.Label(left_frame, text="Class Hierarchy", font=("TkDefaultFont", 10, "bold")).pack(anchor="w", pady=(0, 5))
+        
+        self.tree = ttk.Treeview(left_frame, show="tree")
+        self.tree.pack(fill="both", expand=True)
+        sb1 = ttk.Scrollbar(left_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb1.set)
+        sb1.pack(side="right", fill="y")
+        
+        self.tree.bind("<<TreeviewSelect>>", self.on_class_select)
+
+        # Right pane: Properties
+        right_frame = ttk.Frame(main_paned)
+        main_paned.add(right_frame, weight=2)
+
+        ttk.Label(right_frame, text="Required Properties", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        self.req_list = tk.Listbox(right_frame, height=8)
+        self.req_list.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(right_frame, text="Custom Properties", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        self.cust_list = tk.Listbox(right_frame, height=10)
+        self.cust_list.pack(fill="both", expand=True, pady=(0, 5))
+
+        add_frame = ttk.Frame(right_frame)
+        add_frame.pack(fill="x", pady=5)
+        
+        self.new_prop_var = tk.StringVar()
+        self.prop_entry = ttk.Entry(add_frame, textvariable=self.new_prop_var)
+        self.prop_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        
+        ttk.Button(add_frame, text="Add Property", command=self.add_custom_property).pack(side="right")
+
+        self.populate_hierarchy()
+        
+    def populate_hierarchy(self):
+        classes = get_sample_classes()
+        def add_subclasses(base, parent_iid):
+            for name, cls in classes.items():
+                if cls.__bases__[0].__name__ == base.__name__:
+                    iid = self.tree.insert(parent_iid, "end", text=name, iid=name)
+                    self.tree.item(iid, open=True)
+                    add_subclasses(cls, iid)
+                    
+        root_iid = self.tree.insert("", "end", text="Sample", iid="Sample")
+        self.tree.item(root_iid, open=True)
+        import database_classes
+        add_subclasses(database_classes.Sample, root_iid)
+
+    def on_class_select(self, event):
+        sel = self.tree.selection()
+        if not sel: return
+        cls_name = sel[0]
+        
+        self.req_list.delete(0, tk.END)
+        self.cust_list.delete(0, tk.END)
+        
+        required, custom = get_class_schema(cls_name)
+        for r in required:
+            self.req_list.insert(tk.END, r)
+        for c in custom:
+            self.cust_list.insert(tk.END, c)
+            
+    def add_custom_property(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Select", "Select a class first.")
+            return
+            
+        cls_name = sel[0]
+        new_prop = self.new_prop_var.get().strip()
+        if not new_prop: return
+        
+        try:
+            if not os.path.exists(SCHEMA_JSON_FILE):
+                schema = {}
+            else:
+                with open(SCHEMA_JSON_FILE, "r", encoding="utf-8") as f:
+                    schema = json.load(f)
+                    
+            if cls_name not in schema:
+                schema[cls_name] = {"required": [], "custom": []}
+                
+            if new_prop not in schema[cls_name]["custom"] and new_prop not in schema[cls_name]["required"]:
+                schema[cls_name]["custom"].append(new_prop)
+                with open(SCHEMA_JSON_FILE, "w", encoding="utf-8") as f:
+                    json.dump(schema, f, indent=4)
+                    
+                self.cust_list.insert(tk.END, new_prop)
+                self.new_prop_var.set("")
+            else:
+                messagebox.showinfo("Exists", "Property already exists.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to add property: {e}")
+
+
 class SampleTreeGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Sample Tree Manager")
+        self.root.title(f"Sample Tree Manager - {TREE_STORAGE_DIR}")
         self.tree_obj = None
         self.current_file = None
         self.discover_btn = None
@@ -264,6 +383,7 @@ class SampleTreeGUI:
         ttk.Button(top_bar, text="Save Tree", command=self.save_tree).pack(side="left", padx=2)
 
         ttk.Button(top_bar, text="Search", command=self.search_property).pack(side="right", padx=2)
+        ttk.Button(top_bar, text="Schema Browser", command=self.open_schema_browser).pack(side="right", padx=2)
 
         # Rainbow mode is available for single-tree view only.
         self.rainbow_active = False
@@ -299,8 +419,12 @@ class SampleTreeGUI:
         ttk.Button(action_frame, text="Copy Node", command=self.copy_node).grid(row=3, column=1, padx=2, pady=6, sticky="w")
         ttk.Button(action_frame, text="Create Node", command=self.add_child_node).grid(row=3, column=2, padx=2, pady=6, sticky="w")
 
+        status_frame = ttk.Frame(main)
+        status_frame.pack(fill="x", side="bottom")
+
         self.status_var = tk.StringVar()
-        ttk.Label(main, textvariable=self.status_var, relief="sunken", anchor="w").pack(fill="x")
+        ttk.Label(status_frame, textvariable=self.status_var, relief="sunken", anchor="w").pack(side="left", fill="x", expand=True)
+        ttk.Label(status_frame, text=f"Workspace: {TREE_STORAGE_DIR}", relief="sunken", anchor="e").pack(side="right")
 
         # Save with timestamp button below Add Child
         save_frame = ttk.Frame(main)
@@ -308,6 +432,10 @@ class SampleTreeGUI:
         ttk.Button(save_frame, text="Save with Timestamp and Close", command=self._save_with_timestamp_and_close).pack(padx=2, pady=6, anchor="center")
 
         self.refresh_status("Ready")
+
+
+    def open_schema_browser(self):
+        SchemaBrowser(self.root)
 
     def refresh_status(self, msg):
         self.status_var.set(msg)
@@ -407,7 +535,7 @@ class SampleTreeGUI:
         
         # Determine required properties from file
         try:
-            with open("required_properties.txt", "r", encoding="utf-8") as f:
+            with open(REQUIRED_PROPERTIES_FILE, "r", encoding="utf-8") as f:
                 txt = f.read().strip()
                 if not txt:
                     subclass_req_map = {}
@@ -440,8 +568,8 @@ class SampleTreeGUI:
         
         # Collect existing keys for dropdown
         existing_keys = []
-        if os.path.exists("database_keys.txt"):
-            with open("database_keys.txt", "r") as f:
+        if os.path.exists(DATABASE_KEYS_FILE):
+            with open(DATABASE_KEYS_FILE, "r") as f:
                 for line in f:
                     line = line.strip()
                     if line.startswith(class_name + "_"):
@@ -767,6 +895,27 @@ class SampleTreeGUI:
         sample_system = simpledialog.askstring("Sample System", "Sample System:", parent=self.root)
         if not sample_system:
             return
+            
+        while True:
+            filename = os.path.join(TREE_STORAGE_DIR, f"{sample_system}.json")
+            if os.path.exists(filename):
+                ans = messagebox.askyesnocancel(
+                    "File Exists", 
+                    f"A file named '{sample_system}.json' already exists. Overwriting is highly discouraged.\n\nDo you want to overwrite it? (Click 'No' to enter a new name, or 'Cancel' to abort)",
+                    default=messagebox.NO,
+                    parent=self.root
+                )
+                if ans is None:
+                    return
+                elif ans is True:
+                    break
+                else:
+                    sample_system = simpledialog.askstring("New Name", "Enter new Sample System name:", initialvalue=sample_system, parent=self.root)
+                    if not sample_system:
+                        return
+            else:
+                break
+
         self.display_mode = "single"
         self._reset_multi_state()
         self.tree_obj = treelib.Tree()
@@ -774,14 +923,7 @@ class SampleTreeGUI:
         self.sort_mode = "none"
         self.sort_var.set("none")
         self.tree_obj.create_node("SYSTEM", root_id, data={"Sample_System": sample_system, "sort_mode": "none"})
-        self.current_file = filedialog.asksaveasfilename(
-            initialdir=TREE_STORAGE_DIR,
-            defaultextension=".json",
-            filetypes=[("JSON Files", "*.json")],
-            title="Save New Tree")
-        if not self.current_file:
-            self.tree_obj = None
-            return
+        self.current_file = filename
         serialize_tree(self.tree_obj, self.current_file, sort_mode="none")
         self.populate_treeview()
         # hide discover button once a tree exists / is created
@@ -1282,7 +1424,7 @@ class SampleTreeGUI:
 
         # Load required properties (reuse same logic as add_child_node)
         try:
-            with open("required_properties.txt", "r", encoding="utf-8") as f:
+            with open(REQUIRED_PROPERTIES_FILE, "r", encoding="utf-8") as f:
                 txt = f.read().strip()
             if not txt:
                 subclass_req_map = {}
@@ -1315,8 +1457,8 @@ class SampleTreeGUI:
 
         # Collect existing keys for dropdown (filter by prefix type_)
         existing_keys = []
-        if os.path.exists("database_keys.txt"):
-            with open("database_keys.txt", "r") as f:
+        if os.path.exists(DATABASE_KEYS_FILE):
+            with open(DATABASE_KEYS_FILE, "r") as f:
                 for line in f:
                     line = line.strip()
                     if line.startswith(class_name + "_"):
@@ -1363,6 +1505,8 @@ class SampleTreeGUI:
                 obj.properties = new_props
             else:
                 setattr(obj, "properties", new_props)
+            if hasattr(obj, "log_keys"):
+                obj.log_keys()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to update properties: {e}")
             return
@@ -1493,7 +1637,7 @@ class SampleTreeGUI:
 
         # Determine required properties from file
         try:
-            with open("required_properties.txt", "r", encoding="utf-8") as f:
+            with open(REQUIRED_PROPERTIES_FILE, "r", encoding="utf-8") as f:
                 txt = f.read().strip()
                 if not txt:
                     subclass_req_map = {}
@@ -1527,8 +1671,8 @@ class SampleTreeGUI:
 
         # Collect existing keys for dropdown (filter by prefix type_)
         existing_keys = []
-        if os.path.exists("database_keys.txt"):
-            with open("database_keys.txt", "r") as f:
+        if os.path.exists(DATABASE_KEYS_FILE):
+            with open(DATABASE_KEYS_FILE, "r") as f:
                 for line in f:
                     line = line.strip()
                     if line.startswith(class_name + "_"):
@@ -1580,8 +1724,8 @@ class SampleTreeGUI:
 
                 # Load node types
                 nodes_types = ['any']
-                if os.path.exists('required_properties.txt'):
-                    with open('required_properties.txt', 'r', encoding='utf-8') as f:
+                if os.path.exists(REQUIRED_PROPERTIES_FILE):
+                    with open(REQUIRED_PROPERTIES_FILE, 'r', encoding='utf-8') as f:
                         for line in f:
                             line = line.split('#', 1)[0].strip()
                             if not line:
@@ -1601,8 +1745,8 @@ class SampleTreeGUI:
                 # Load database_keys
                 db_keys = []
                 self.additional_keys = ['id', 'entry_created_date']
-                if os.path.exists("database_keys.txt"):
-                    with open("database_keys.txt", "r") as f:
+                if os.path.exists(DATABASE_KEYS_FILE):
+                    with open(DATABASE_KEYS_FILE, "r") as f:
                         db_keys = self.additional_keys + sorted(set(line.strip() for line in f if line.strip()))
                 # Add 'id' and 'entry_created_date' as searchable property keys
                 db_keys.append("<Custom key...>")

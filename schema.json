@@ -1,0 +1,94 @@
+{
+    "Annealing": {
+        "required": [
+            "temperature_C",
+            "duration"
+        ],
+        "custom": []
+    },
+    "Chip": {
+        "required": [],
+        "custom": []
+    },
+    "EBSD": {
+        "required": [],
+        "custom": []
+    },
+    "Electrical_measurement": {
+        "required": [],
+        "custom": []
+    },
+    "FIB_milling": {
+        "required": [
+            "ion_species",
+            "microscope"
+        ],
+        "custom": []
+    },
+    "Imaging": {
+        "required": [
+            "microscope"
+        ],
+        "custom": []
+    },
+    "Liftout": {
+        "required": [],
+        "custom": []
+    },
+    "Micromechanical_testing": {
+        "required": [
+            "test_type"
+        ],
+        "custom": []
+    },
+    "Pillar_array": {
+        "required": [],
+        "custom": []
+    },
+    "Processing_Step": {
+        "required": [],
+        "custom": []
+    },
+    "SEM_stub": {
+        "required": [
+            "stub_diameter"
+        ],
+        "custom": []
+    },
+    "Sample": {
+        "required": [],
+        "custom": []
+    },
+    "Swissmapper": {
+        "required": [],
+        "custom": []
+    },
+    "TEM_lamella": {
+        "required": [
+            "grid_material"
+        ],
+        "custom": []
+    },
+    "TKD": {
+        "required": [],
+        "custom": []
+    },
+    "Tensile_bar": {
+        "required": [],
+        "custom": []
+    },
+    "Wafer": {
+        "required": [
+            "material"
+        ],
+        "custom": [
+            "Chipped_Piece"
+        ]
+    },
+    "XRay_analysis": {
+        "required": [
+            "mode"
+        ],
+        "custom": []
+    }
+}

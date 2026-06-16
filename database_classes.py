@@ -10,6 +10,43 @@ import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox, filedialog
 import shutil
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATABASE_KEYS_FILE = os.path.join(BASE_DIR, "database_keys.txt")
+REQUIRED_PROPERTIES_FILE = os.path.join(BASE_DIR, "required_properties.txt")
+
+SCHEMA_JSON_FILE = os.path.join(BASE_DIR, "schema.json")
+
+def _migrate_to_json_if_needed():
+    if not os.path.exists(SCHEMA_JSON_FILE):
+        schema = {}
+        if os.path.exists(REQUIRED_PROPERTIES_FILE):
+            with open(REQUIRED_PROPERTIES_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or ":" not in line: continue
+                    cls_name, props = line.split(":", 1)
+                    cls_name = cls_name.strip()
+                    keys = [k.strip() for k in props.split(",") if k.strip()]
+                    if cls_name not in schema: schema[cls_name] = {"required": [], "custom": []}
+                    schema[cls_name]["required"] = keys
+        if os.path.exists(DATABASE_KEYS_FILE):
+            with open(DATABASE_KEYS_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or "_" not in line: continue
+                    cls_name, prop = line.split("_", 1)
+                    if cls_name not in schema: schema[cls_name] = {"required": [], "custom": []}
+                    if prop not in schema[cls_name]["custom"] and prop not in schema[cls_name]["required"]:
+                        schema[cls_name]["custom"].append(prop)
+        if schema:
+            with open(SCHEMA_JSON_FILE, "w", encoding="utf-8") as f:
+                json.dump(schema, f, indent=4)
+        else:
+            with open(SCHEMA_JSON_FILE, "w", encoding="utf-8") as f:
+                json.dump({}, f, indent=4)
+
+_migrate_to_json_if_needed()
+
 
 class Sample:
     def __init__(self, required_properties=[], **kwargs):
@@ -21,7 +58,7 @@ class Sample:
                 raise ValueError(f"Missing required property for {self.__class__.__name__}: {prop}")
             
         # # Check if any kwargs look like typos of existing properties
-        # with open('database_keys.txt', 'a+') as f:
+        # with open(DATABASE_KEYS_FILE, 'a+') as f:
         #     f.seek(0)
         #     existing_keys = f.read().splitlines()
         #     type_prefix = self.type + '_'
@@ -46,19 +83,17 @@ class Sample:
         # self.log_keys()
 
         # Check if any kwargs look like typos of existing properties
-        with open('database_keys.txt', 'a+') as f:
-            f.seek(0)
-            existing_keys = f.read().splitlines()
-            type_prefix = self.__class__.__name__ + '_'
-            type_keys = [key[len(type_prefix):] for key in existing_keys if key.startswith(type_prefix)]
+        try:
+            with open(SCHEMA_JSON_FILE, 'r', encoding='utf-8') as f:
+                schema = json.load(f)
+            cls_schema = schema.get(self.__class__.__name__, {"required": [], "custom": []})
+            type_keys = cls_schema["custom"] + cls_schema["required"]
             for kwarg_key in kwargs.keys():
-                # don't warn for the optional universal 'date' property
-                if kwarg_key == 'date':
-                    continue
-                # Check for possible typos: if the key is similar to an existing key for this type
-                # For simplicity, warn if the key is not in type_keys and not in required_properties
+                if kwarg_key == 'date': continue
                 if kwarg_key not in type_keys and kwarg_key not in self.required_properties:
                     print(f"Warning: '{kwarg_key}' is not a known property for {self.__class__.__name__}. Check for typos or add it intentionally.")
+        except Exception:
+            pass
 
         # Check if any of the kwargs are auto-generated properties and delete them if so
         auto_props = ['id', 'entry_created_date']
@@ -97,15 +132,22 @@ class Sample:
 
     def log_keys(self):
         """Add the keys to a global list"""
-        # Open the keys file and check if the key already exists
-        with open('database_keys.txt', 'a+') as f:
-            f.seek(0)
-            existing_keys = f.read().splitlines()
+        try:
+            with open(SCHEMA_JSON_FILE, 'r', encoding='utf-8') as f:
+                schema = json.load(f)
+            cls_name = self.__class__.__name__
+            if cls_name not in schema:
+                schema[cls_name] = {"required": [], "custom": []}
+            changed = False
             for key in self.properties.keys():
-                glob_key = self.__class__.__name__ + '_' + key      # Add the type prefix to the key (how they are stored in the file)
-                if glob_key not in existing_keys:
-                    f.write(glob_key + '\n')
-                    print(f"Added new key: {key} to database_keys.txt")
+                if key not in schema[cls_name]["custom"] and key not in schema[cls_name]["required"] and key != 'date':
+                    schema[cls_name]["custom"].append(key)
+                    changed = True
+            if changed:
+                with open(SCHEMA_JSON_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(schema, f, indent=4)
+        except Exception:
+            pass
 
     def __setattr__(self, name, value):
         if name == 'id':
@@ -195,14 +237,16 @@ class Processing_Step(Sample):
             if prop not in kwargs:
                 raise ValueError(f"Missing required property for {self.__class__.__name__}: {prop}")
 
-        with open('database_keys.txt', 'a+') as f:
-            f.seek(0)
-            existing_keys = f.read().splitlines()
-            type_prefix = self.__class__.__name__ + '_'
-            type_keys = [key[len(type_prefix):] for key in existing_keys if key.startswith(type_prefix)]
+        try:
+            with open(SCHEMA_JSON_FILE, 'r', encoding='utf-8') as f:
+                schema = json.load(f)
+            cls_schema = schema.get(self.__class__.__name__, {"required": [], "custom": []})
+            type_keys = cls_schema["custom"] + cls_schema["required"]
             for kwarg_key in kwargs.keys():
                 if kwarg_key not in type_keys and kwarg_key not in self.required_properties:
                     print(f"Warning: '{kwarg_key}' is not a known property for {self.__class__.__name__}. Check for typos or add it intentionally.")
+        except Exception:
+            pass
 
         auto_props = ['id', 'entry_created_date']
         for prop in auto_props:
@@ -231,15 +275,22 @@ class Processing_Step(Sample):
 
     def log_keys(self):
         """Add the keys to a global list"""
-        # Open the keys file and check if the key already exists
-        with open('database_keys.txt', 'a+') as f:
-            f.seek(0)
-            existing_keys = f.read().splitlines()
+        try:
+            with open(SCHEMA_JSON_FILE, 'r', encoding='utf-8') as f:
+                schema = json.load(f)
+            cls_name = self.__class__.__name__
+            if cls_name not in schema:
+                schema[cls_name] = {"required": [], "custom": []}
+            changed = False
             for key in self.properties.keys():
-                glob_key = self.__class__.__name__ + '_' + key
-                if glob_key not in existing_keys:
-                    f.write(glob_key + '\n')
-                    print(f"Added new key: {key} to database_keys.txt")
+                if key not in schema[cls_name]["custom"] and key not in schema[cls_name]["required"] and key != 'date':
+                    schema[cls_name]["custom"].append(key)
+                    changed = True
+            if changed:
+                with open(SCHEMA_JSON_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(schema, f, indent=4)
+        except Exception:
+            pass
 
     def __setattr__(self, name, value):
         if name == 'id':
@@ -324,25 +375,14 @@ class Swissmapper(Processing_Step):
 
 
 
-def discover_required_properties(output_file='required_properties.txt'):
-    """
-    Discover required_properties lists for classes defined in this module
-    by temporarily intercepting Sample.__init__ and Processing_Step.__init__.
-    Writes a text file with one line per class: "ClassName: prop1, prop2..."
-    Returns a dict mapping class name -> list of required properties.
-    """
-
+def discover_required_properties():
     module = sys.modules[__name__]
     captured = {}
-
-    # Keep originals to restore later
     orig_sample_init = Sample.__init__
     orig_proc_init = Processing_Step.__init__
 
     def _sample_wrapper(self, required_properties=[], **kwargs):
-        # Record required properties passed to Sample.__init__
         captured[self.__class__.__name__] = list(required_properties)
-        # Do not call original to avoid side-effects during discovery
         return None
 
     def _proc_wrapper(self, required_properties=[], **kwargs):
@@ -350,68 +390,38 @@ def discover_required_properties(output_file='required_properties.txt'):
         return None
 
     try:
-        # Monkey-patch constructors
         Sample.__init__ = _sample_wrapper
         Processing_Step.__init__ = _proc_wrapper
-
-        # Find classes defined in this module
         classes = [obj for _, obj in inspect.getmembers(module, inspect.isclass)
                     if obj.__module__ == module.__name__]
-
-        # Instantiate each class (without kwargs). The patched ctors will capture required_properties.
         for cls in classes:
             try:
                 cls()
             except Exception:
-                # Ignore instantiation errors; we only need the captured data from our wrappers
                 pass
     finally:
-        # Restore originals
         Sample.__init__ = orig_sample_init
         Processing_Step.__init__ = orig_proc_init
 
-    # Ensure every class has an entry (empty list if none captured)
     result = {}
     for cls in classes:
         name = cls.__name__
         result[name] = captured.get(name, [])
 
-    # Check if output file exists
-    if os.path.exists(output_file):
-        # Read old file contents
-        with open(output_file, 'r') as f:
-            old_lines = f.readlines()
-        old_props = {}
-        for line in old_lines:
-            if ':' in line:
-                name, props = line.strip().split(':', 1)
-                old_props[name.strip()] = set(p.strip() for p in props.split(',') if p.strip())
+    if os.path.exists(SCHEMA_JSON_FILE):
+        with open(SCHEMA_JSON_FILE, 'r', encoding='utf-8') as f:
+            schema = json.load(f)
+    else:
+        schema = {}
 
-        # Compare with new result
-        missing = []
-        for name in old_props:
-            if name in result:
-                if not old_props[name].issubset(set(result[name])):
-                    missing.append(name)
-            else:
-                missing.append(name)
+    for name, props in result.items():
+        if name not in schema:
+            schema[name] = {"required": [], "custom": []}
+        schema[name]["required"] = props
 
-        if missing:
-            print(f"Warning: The new required_properties list is missing values for: {', '.join(missing)}")
-            choice = input("Overwrite file (o) or rename old file (r)? [o/r]: ").strip().lower()
-            if choice == 'r':
-                timestamp = datetime.datetime.now().strftime('%y%m%d%H%M_')
-                new_name = timestamp + output_file
-                shutil.move(output_file, new_name)
-                print(f"Old file renamed to {new_name}")
-            elif choice != 'o':
-                print("No action taken.")
-                return result
-
-    # Write to file
-    with open(output_file, 'w') as f:
-        for name in sorted(result.keys()):
-            props = ', '.join(result[name])
-            f.write(f"{name}: {props}\n")
+    with open(SCHEMA_JSON_FILE, 'w', encoding='utf-8') as f:
+        json.dump(schema, f, indent=4)
 
     return result
+
+# Ignore the rest of the original function by finding where it ends (we just cut it out)
