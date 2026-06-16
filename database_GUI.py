@@ -235,9 +235,18 @@ class AddClassDialog(tk.Toplevel):
         self.req_var = tk.StringVar()
         ttk.Entry(form, textvariable=self.req_var).grid(row=3, column=0, columnspan=2, sticky="ew", pady=5)
 
-        ttk.Label(form, text="Permitted Children (multi-select):").grid(row=4, column=0, columnspan=2, sticky="w", pady=(10,0))
-        self.children_list = tk.Listbox(form, selectmode="multiple", height=6)
-        self.children_list.grid(row=5, column=0, columnspan=2, sticky="ew", pady=5)
+        lists_frame = ttk.Frame(form)
+        lists_frame.grid(row=4, column=0, columnspan=2, sticky="nsew", pady=10)
+        lists_frame.columnconfigure(0, weight=1)
+        lists_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(lists_frame, text="Permitted Children:").grid(row=0, column=0, sticky="w")
+        self.children_list = tk.Listbox(lists_frame, selectmode="multiple", height=6)
+        self.children_list.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
+
+        ttk.Label(lists_frame, text="Permitted Parents:").grid(row=0, column=1, sticky="w")
+        self.parents_list = tk.Listbox(lists_frame, selectmode="multiple", height=6)
+        self.parents_list.grid(row=1, column=1, sticky="nsew", padx=(5, 0))
 
         # Populate children list
         import json
@@ -246,8 +255,10 @@ class AddClassDialog(tk.Toplevel):
         classes = sorted([c for c in self.schema.keys() if c not in ['Sample', 'Processing_Step']])
         for c in classes:
             self.children_list.insert(tk.END, c)
+            self.parents_list.insert(tk.END, c)
 
         form.columnconfigure(1, weight=1)
+        form.rowconfigure(4, weight=1)
 
         ttk.Button(self, text="Create", command=self.create_class).pack(pady=10)
 
@@ -256,8 +267,11 @@ class AddClassDialog(tk.Toplevel):
         base = self.base_var.get().strip()
         reqs = [r.strip() for r in self.req_var.get().split(',') if r.strip()]
         
-        sel = self.children_list.curselection()
-        perm = [self.children_list.get(i) for i in sel]
+        sel_children = self.children_list.curselection()
+        perm_children = [self.children_list.get(i) for i in sel_children]
+        
+        sel_parents = self.parents_list.curselection()
+        perm_parents = [self.parents_list.get(i) for i in sel_parents]
 
         if not name:
             messagebox.showwarning("Input Error", "Class name cannot be empty.")
@@ -273,8 +287,12 @@ class AddClassDialog(tk.Toplevel):
             "base": base,
             "required": reqs,
             "custom": [],
-            "permitted_children": perm
+            "permitted_children": perm_children
         }
+        
+        for parent in perm_parents:
+            if name not in self.schema[parent].get("permitted_children", []):
+                self.schema[parent].setdefault("permitted_children", []).append(name)
 
         import json
         with open(DATABASE_STRUCTURE_FILE, "w", encoding="utf-8") as f:
@@ -436,6 +454,31 @@ class SampleTreeGUI:
         # Menu Bar
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
+        
+        # File Menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="New Tree", command=self.create_new_tree)
+        file_menu.add_command(label="Load Tree", command=self.load_tree)
+        file_menu.add_command(label="Open All Trees", command=self.load_all_trees)
+        file_menu.add_separator()
+        file_menu.add_command(label="Save Tree", command=self.save_tree)
+        file_menu.add_command(label="Save, archive and close", command=self._save_archive_and_close)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.on_closing)
+        menubar.add_cascade(label="File", menu=file_menu)
+        
+        # View Menu
+        view_menu = tk.Menu(menubar, tearoff=0)
+        view_menu.add_command(label="Toggle Rainbow Mode", command=self.toggle_rainbow_mode)
+        menubar.add_cascade(label="View", menu=view_menu)
+        
+        # Tools Menu
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        tools_menu.add_command(label="Search", command=self.search_property)
+        tools_menu.add_command(label="Structure Browser", command=self.open_structure_browser)
+        menubar.add_cascade(label="Tools", menu=tools_menu)
+
+        # Advanced Menu
         advanced_menu = tk.Menu(menubar, tearoff=0)
         advanced_menu.add_command(label="Add New Structure", command=lambda: AddClassDialog(self.root, None))
         advanced_menu.add_command(label="Import Legacy Keys", command=self.import_legacy_keys)
@@ -444,20 +487,19 @@ class SampleTreeGUI:
         # Check for restored schema
         import database_classes
         if getattr(database_classes, "RESTORED_DEFAULT_SCHEMA", False):
-            # Using self.root.after to ensure GUI is up, but sometimes lambda captures wrong or is swallowed
             def show_warn():
                 messagebox.showwarning("Default Structure Restored", "database_structure.json was missing.\n\nA default structure has been recreated.", parent=self.root)
             self.root.after(1000, show_warn)
 
-
         main = ttk.Frame(root)
         main.pack(fill="both", expand=True, padx=6, pady=6)
 
-        # Use PanedWindow for resizable split between treeview and properties panel
+
+
+        # 3. Main Split View
         paned_main = ttk.PanedWindow(main, orient="horizontal")
         paned_main.pack(fill="both", expand=True, pady=6)
 
-        # Add a vertical scrollbar to the main treeview
         treeview_frame = ttk.Frame(paned_main)
         self.treeview = ttk.Treeview(treeview_frame)
         self.treeview.pack(side="left", fill="both", expand=True)
@@ -466,7 +508,6 @@ class SampleTreeGUI:
         self.treeview.configure(yscrollcommand=treeview_scrollbar.set)
         paned_main.add(treeview_frame, weight=3)
 
-        # Create properties panel (right side)
         self.properties_panel = ttk.Frame(paned_main)
         ttk.Label(self.properties_panel, text="Properties", font=("TkDefaultFont", 10, "bold")).pack(anchor="w", padx=4, pady=4)
         properties_frame = ttk.LabelFrame(self.properties_panel, text="Node Properties")
@@ -491,29 +532,32 @@ class SampleTreeGUI:
         
         paned_main.add(self.properties_panel, weight=2)
 
-        top_bar = ttk.Frame(main)
-        top_bar.pack(fill="x")
-        
-
-        
-        ttk.Button(top_bar, text="New Tree", command=self.create_new_tree).pack(side="left", padx=2)
-        ttk.Button(top_bar, text="Load Tree", command=self.load_tree).pack(side="left", padx=2)
-        ttk.Button(top_bar, text="Open All Trees", command=self.load_all_trees).pack(side="left", padx=2)
-        ttk.Button(top_bar, text="Save Tree", command=self.save_tree).pack(side="left", padx=2)
-
-        ttk.Button(top_bar, text="Search", command=self.search_property).pack(side="right", padx=2)
-        ttk.Button(top_bar, text="Structure Browser", command=self.open_structure_browser).pack(side="right", padx=2)
-
-        # Rainbow mode is available for single-tree view only.
-        self.rainbow_active = False
-        self.rainbow_button = ttk.Button(top_bar, text="Rainbow Mode", command=self.toggle_rainbow_mode)
-        self.rainbow_button.pack_forget()
-
         self.treeview.bind("<<TreeviewSelect>>", self.on_select)
         self.treeview.bind("<<TreeviewOpen>>", self.on_treeview_open)
 
-        # Node editor frame
-        action_frame = ttk.LabelFrame(main, text="Add Child")
+        # 1. Quick Access Top Bar
+        top_bar = ttk.Frame(main)
+        top_bar.pack(fill="x", pady=(0, 2))
+        ttk.Button(top_bar, text="Search", command=self.search_property).pack(side="left", padx=2)
+        ttk.Button(top_bar, text="Save Tree", command=self.save_tree).pack(side="left", padx=2)
+        ttk.Button(top_bar, text="Save, archive and close", command=self._save_archive_and_close).pack(side="left", padx=2)
+        
+        # Hidden Rainbow Button for backward compatibility if needed by mode changes
+        self.rainbow_active = False
+        self.rainbow_button = ttk.Button(top_bar, text="Rainbow Mode", command=self.toggle_rainbow_mode)
+        # self.rainbow_button.pack_forget()
+
+        # 2. Sorting Frame
+        sort_frame = ttk.Frame(main)
+        sort_frame.pack(fill="x", pady=(0, 6))
+        ttk.Label(sort_frame, text="Sort by:").pack(side="left", padx=2)
+        self.sort_var = tk.StringVar(value="none")
+        ttk.Radiobutton(sort_frame, text="None", variable=self.sort_var, value="none", command=self.on_sort_changed).pack(side="left")
+        ttk.Radiobutton(sort_frame, text="Name", variable=self.sort_var, value="name", command=self.on_sort_changed).pack(side="left")
+        ttk.Radiobutton(sort_frame, text="Date Created", variable=self.sort_var, value="date_created", command=self.on_sort_changed).pack(side="left")
+
+        # 4. Action Frame (Add Child / Node Actions)
+        action_frame = ttk.LabelFrame(main, text="Selected Node Actions")
         action_frame.pack(fill="x", pady=4)
 
         ttk.Label(action_frame, text="Parent Node:").grid(row=0, column=0, sticky="w", padx=2, pady=2)
@@ -525,30 +569,17 @@ class SampleTreeGUI:
         self.class_cb = ttk.Combobox(action_frame, textvariable=self.class_var, width=28, state="readonly")
         self.class_cb.grid(row=1, column=1, sticky="w", padx=2, pady=2)
 
-        # Sorting controls
-        sort_frame = ttk.Frame(action_frame)
-        sort_frame.grid(row=2, column=0, columnspan=2, sticky="w", padx=2, pady=4)
-        ttk.Label(sort_frame, text="Sort by:").pack(side="left", padx=2)
-        self.sort_var = tk.StringVar(value="none")
-        ttk.Radiobutton(sort_frame, text="None", variable=self.sort_var, value="none", command=self.on_sort_changed).pack(side="left")
-        ttk.Radiobutton(sort_frame, text="Name", variable=self.sort_var, value="name", command=self.on_sort_changed).pack(side="left")
-        ttk.Radiobutton(sort_frame, text="Date Created", variable=self.sort_var, value="date_created", command=self.on_sort_changed).pack(side="left")
+        ttk.Button(action_frame, text="Edit Node", command=self.edit_node).grid(row=2, column=0, padx=2, pady=6, sticky="w")
+        ttk.Button(action_frame, text="Copy Node", command=self.copy_node).grid(row=2, column=1, padx=2, pady=6, sticky="w")
+        ttk.Button(action_frame, text="Create Node", command=self.add_child_node).grid(row=2, column=2, padx=2, pady=6, sticky="w")
 
-        ttk.Button(action_frame, text="Edit Node", command=self.edit_node).grid(row=3, column=0, padx=2, pady=6, sticky="w")
-        ttk.Button(action_frame, text="Copy Node", command=self.copy_node).grid(row=3, column=1, padx=2, pady=6, sticky="w")
-        ttk.Button(action_frame, text="Create Node", command=self.add_child_node).grid(row=3, column=2, padx=2, pady=6, sticky="w")
-
+        # 5. Status Bar
         status_frame = ttk.Frame(main)
         status_frame.pack(fill="x", side="bottom")
 
         self.status_var = tk.StringVar()
         ttk.Label(status_frame, textvariable=self.status_var, relief="sunken", anchor="w").pack(side="left", fill="x", expand=True)
         ttk.Label(status_frame, text=f"Workspace: {TREE_STORAGE_DIR}", relief="sunken", anchor="e").pack(side="right")
-
-        # Save with timestamp button below Add Child
-        save_frame = ttk.Frame(main)
-        save_frame.pack(fill="x", pady=(6, 0))
-        ttk.Button(save_frame, text="Save with Timestamp and Close", command=self._save_with_timestamp_and_close).pack(padx=2, pady=6, anchor="center")
 
         self.refresh_status("Ready")
 
@@ -929,9 +960,9 @@ class SampleTreeGUI:
 
 
     def on_closing(self):
-        answer = messagebox.askyesnocancel("Quit","'Yes' to save with timestamp and close, or 'No' to discard recent changes")
+        answer = messagebox.askyesnocancel("Quit","'Yes' to save, archive and close, or 'No' to discard recent changes")
         if answer is True:  # Yes
-            self._save_with_timestamp_and_close()
+            self._save_archive_and_close()
             self.root.destroy()
         elif answer is False:  # No
             self.root.destroy()
@@ -1745,7 +1776,7 @@ class SampleTreeGUI:
         else:
             self.refresh_status(f"Edited {class_name} node.")
 
-    def _save_with_timestamp_and_close(self):
+    def _save_archive_and_close(self):
         self.save_tree()
         if self.display_mode == "multi":
             if not self.multi_trees:
