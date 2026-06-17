@@ -119,7 +119,7 @@ class PropertyEditor(tk.Toplevel):
         ttk.Label(self.prop_frame, text="Required properties:").grid(row=0, column=0, columnspan=3, sticky="w")
 
         self.existing_keys = sorted(existing_keys)
-        self.existing_keys.append("<New property...>")
+        self.existing_keys.insert(0, "<New property...>")
         r = 1
         for rp in self.req:
             kv = tk.StringVar(value=rp)
@@ -168,7 +168,7 @@ class PropertyEditor(tk.Toplevel):
                 if new_key:
                     # Insert before sentinel if not already present
                     if new_key not in self.existing_keys:
-                        self.existing_keys.insert(-1, new_key)
+                        self.existing_keys.append(new_key)
                     kv.set(new_key)
                     # Update all combobox values to include the new key
                     for rset in self.rows:
@@ -544,8 +544,6 @@ class SampleTreeGUI:
         
         # Hidden Rainbow Button for backward compatibility if needed by mode changes
         self.rainbow_active = False
-        self.rainbow_button = ttk.Button(top_bar, text="Rainbow Mode", command=self.toggle_rainbow_mode)
-        # self.rainbow_button.pack_forget()
 
         # 2. Sorting Frame
         sort_frame = ttk.Frame(main)
@@ -582,6 +580,18 @@ class SampleTreeGUI:
         ttk.Label(status_frame, text=f"Workspace: {TREE_STORAGE_DIR}", relief="sunken", anchor="e").pack(side="right")
 
         self.refresh_status("Ready")
+
+        cache_file = os.path.join(BASE_DIR, ".db_cache.json")
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r") as f:
+                    import json
+                    cache = json.load(f)
+                    last_tree = cache.get("last_tree")
+                    if last_tree and os.path.exists(last_tree):
+                        self._load_specific_tree(last_tree)
+            except Exception:
+                pass
 
 
     def open_structure_browser(self):
@@ -729,6 +739,11 @@ class SampleTreeGUI:
         existing_keys = sorted(set(existing_keys) | set(cur_props.keys()))
         
         # Open PropertyEditor with pre-filled values
+        _, custom_props = get_class_schema(class_name)
+        if isinstance(existing_keys, list):
+            existing_keys.extend(custom_props)
+        else:
+            existing_keys = set(existing_keys) | set(custom_props)
         editor = PropertyEditor(self.root, cls, set(existing_keys), required)
         try:
             for i, rp in enumerate(required):
@@ -938,6 +953,8 @@ class SampleTreeGUI:
         new_props = editor.result
         try:
             new_obj = cls(**new_props)
+            if hasattr(new_obj, "log_keys"):
+                new_obj.log_keys()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create new instance: {e}")
             return
@@ -979,8 +996,6 @@ class SampleTreeGUI:
         self.class_cb['values'] = []
         self.class_var.set("")
         self.rainbow_active = False
-        self.rainbow_button.pack_forget()
-        self.rainbow_button.config(text="Rainbow Mode")
 
     def _selected_node_context(self):
         sel = self.treeview.selection()
@@ -1096,12 +1111,14 @@ class SampleTreeGUI:
             
         self.current_file = filename
         self.sort_var.set("none")
-        try:
-            self.rainbow_button.pack_forget()
-        except Exception:
-            pass
         self._hide_discover_button()
         self.refresh_status(f"Created new tree: {os.path.basename(filename)}")
+        try:
+            with open(os.path.join(BASE_DIR, ".db_cache.json"), "w") as f:
+                import json
+                json.dump({"last_tree": filename}, f)
+        except Exception:
+            pass
         self._refresh_after_tree_change(focus_node_id=root_id)
 
     def load_tree(self):
@@ -1111,6 +1128,9 @@ class SampleTreeGUI:
             title="Load Tree")
         if not filename:
             return
+        self._load_specific_tree(filename)
+
+    def _load_specific_tree(self, filename):
         try:
             self.display_mode = "single"
             self._reset_multi_state()
@@ -1125,6 +1145,12 @@ class SampleTreeGUI:
             # hide discover button once a tree is loaded
             self._hide_discover_button()
             self.refresh_status(f"Loaded {os.path.basename(filename)}")
+            try:
+                with open(os.path.join(BASE_DIR, ".db_cache.json"), "w") as f:
+                    import json
+                    json.dump({"last_tree": filename}, f)
+            except Exception:
+                pass
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load: {e}")
 
@@ -1177,10 +1203,6 @@ class SampleTreeGUI:
         self.multi_trees = loaded
         # Set sort_var to "none" for multi-tree display
         self.sort_var.set("none")
-        try:
-            self.rainbow_button.pack(side="left", padx=2)
-        except Exception:
-            pass
         self.populate_multi_treeview()
         self.parent_label_var.set("-")
         self.class_cb['values'] = []
@@ -1384,14 +1406,12 @@ class SampleTreeGUI:
                 self._activate_rainbow_mode(self.rainbow_colours())
             else:
                 self.populate_multi_treeview()
-            self.rainbow_button.config(text="Classic View")
         else:
             self.rainbow_active = False
             if self.display_mode == "single":
                 self.populate_treeview()
             else:
                 self.populate_multi_treeview()
-            self.rainbow_button.config(text="Rainbow Mode")
 
     def populate_treeview(self):
         self.treeview_index = {}
@@ -1409,10 +1429,6 @@ class SampleTreeGUI:
         if not self.tree_obj:
             return
 
-        try:
-            self.rainbow_button.pack(side="left", padx=2)
-        except Exception:
-            pass
 
         # configure tag for system children (red text)
         try:
@@ -1460,10 +1476,6 @@ class SampleTreeGUI:
         if not self.multi_trees:
             return
 
-        try:
-            self.rainbow_button.pack(side="left", padx=2)
-        except Exception:
-            pass
 
         def add_node(system_key, tree, node_id, parent_iid, expand_this_system, depth):
             node = tree.get_node(node_id)
@@ -1726,6 +1738,11 @@ class SampleTreeGUI:
         cur_props = obj.properties if isinstance(obj.properties, dict) else {}
         existing_keys = sorted(set(existing_keys) | set(cur_props.keys()))
 
+        _, custom_props = get_class_schema(class_name)
+        if isinstance(existing_keys, list):
+            existing_keys.extend(custom_props)
+        else:
+            existing_keys = set(existing_keys) | set(custom_props)
         editor = PropertyEditor(self.root, cls, set(existing_keys), required)
 
         # Prefill required rows with current values
@@ -1936,6 +1953,11 @@ class SampleTreeGUI:
                     if line.startswith(class_name + "_"):
                         existing_keys.append(line[len(class_name) + 1:])
 
+        _, custom_props = get_class_schema(class_name)
+        if isinstance(existing_keys, list):
+            existing_keys.extend(custom_props)
+        else:
+            existing_keys = set(existing_keys) | set(custom_props)
         editor = PropertyEditor(self.root, cls, set(existing_keys), required)
         self.root.wait_window(editor)
         if editor.result is None:
@@ -1943,6 +1965,8 @@ class SampleTreeGUI:
         kwargs = editor.result
         try:
             obj = cls(**kwargs)
+            if hasattr(obj, "log_keys"):
+                obj.log_keys()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create instance: {e}")
             return
