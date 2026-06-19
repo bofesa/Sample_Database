@@ -5,7 +5,7 @@ import threading
 
 # -------- GUI + Tree persistence utilities --------
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+from database_classes import BASE_DIR
 TREE_STORAGE_DIR = os.path.join(BASE_DIR, "databases")
 os.makedirs(TREE_STORAGE_DIR, exist_ok=True)
 

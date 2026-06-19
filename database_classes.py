@@ -10,7 +10,13 @@ import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox, filedialog
 import shutil
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):
+    # running as exe (PyInstaller)
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    # running as .py script
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 DATABASE_KEYS_FILE = os.path.join(BASE_DIR, "database_keys.txt")
 REQUIRED_PROPERTIES_FILE = os.path.join(BASE_DIR, "required_properties.txt")
 
