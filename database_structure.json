@@ -161,7 +161,8 @@
         ],
         "permitted_children": [
             "Chip",
-            "SEM_stub"
+            "SEM_stub",
+			"Annealing"
         ]
     },
     "FIB_milling": {

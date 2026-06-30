@@ -726,57 +726,12 @@ class SampleTreeGUI:
             messagebox.showerror("Error", f"Class {class_name} not found.")
             return
         
-        # Determine required properties from file
-        try:
-            with open(REQUIRED_PROPERTIES_FILE, "r", encoding="utf-8") as f:
-                txt = f.read().strip()
-                if not txt:
-                    subclass_req_map = {}
-                else:
-                    try:
-                        subclass_req_map = json.loads(txt)
-                        if not isinstance(subclass_req_map, dict):
-                            raise ValueError("JSON root is not an object")
-                    except Exception:
-                        subclass_req_map = {}
-                        for line in txt.splitlines():
-                            line = line.split("#", 1)[0].strip()
-                            if not line:
-                                continue
-                            if ":" in line:
-                                cls_key, vals = line.split(":", 1)
-                            elif "=" in line:
-                                cls_key, vals = line.split("=", 1)
-                            else:
-                                parts = line.split()
-                                if len(parts) == 2:
-                                    cls_key, vals = parts[0], parts[1]
-                                else:
-                                    continue
-                            keys = [k.strip() for k in vals.split(",") if k.strip()]
-                            subclass_req_map[cls_key.strip()] = keys
-        except FileNotFoundError:
-            subclass_req_map = {}
-        required = subclass_req_map.get(class_name, [])
-        
-        # Collect existing keys for dropdown
-        existing_keys = []
-        if os.path.exists(DATABASE_KEYS_FILE):
-            with open(DATABASE_KEYS_FILE, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith(class_name + "_"):
-                        existing_keys.append(line[len(class_name) + 1:])
+        required, custom_props = get_class_schema(class_name)
         
         cur_props = obj.properties if isinstance(obj.properties, dict) else {}
-        existing_keys = sorted(set(existing_keys) | set(cur_props.keys()))
         
         # Open PropertyEditor with pre-filled values
-        _, custom_props = get_class_schema(class_name)
-        if isinstance(existing_keys, list):
-            existing_keys.extend(custom_props)
-        else:
-            existing_keys = set(existing_keys) | set(custom_props)
+        existing_keys = sorted(set(custom_props) | set(cur_props.keys()))
         editor = PropertyEditor(self.root, cls, set(existing_keys), required)
         try:
             for i, rp in enumerate(required):
@@ -1886,57 +1841,11 @@ class SampleTreeGUI:
         class_name = node.tag
         cls = obj.__class__
 
-        # Load required properties (reuse same logic as add_child_node)
-        try:
-            with open(REQUIRED_PROPERTIES_FILE, "r", encoding="utf-8") as f:
-                txt = f.read().strip()
-            if not txt:
-                subclass_req_map = {}
-            else:
-                try:
-                    subclass_req_map = json.loads(txt)
-                    if not isinstance(subclass_req_map, dict):
-                        raise ValueError("JSON root is not an object")
-                except Exception:
-                    subclass_req_map = {}
-                    for line in txt.splitlines():
-                        line = line.split("#", 1)[0].strip()
-                        if not line:
-                            continue
-                        if ":" in line:
-                            cls_key, vals = line.split(":", 1)
-                        elif "=" in line:
-                            cls_key, vals = line.split("=", 1)
-                        else:
-                            parts = line.split()
-                            if len(parts) == 2:
-                                cls_key, vals = parts[0], parts[1]
-                            else:
-                                continue
-                        keys = [k.strip() for k in vals.split(",") if k.strip()]
-                        subclass_req_map[cls_key.strip()] = keys
-        except FileNotFoundError:
-            subclass_req_map = {}
-        required = subclass_req_map.get(class_name, [])
-
-        # Collect existing keys for dropdown (filter by prefix type_)
-        existing_keys = []
-        if os.path.exists(DATABASE_KEYS_FILE):
-            with open(DATABASE_KEYS_FILE, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith(class_name + "_"):
-                        existing_keys.append(line[len(class_name) + 1:])
+        required, custom_props = get_class_schema(class_name)
 
         # Include current object's property keys as available existing keys
         cur_props = obj.properties if isinstance(obj.properties, dict) else {}
-        existing_keys = sorted(set(existing_keys) | set(cur_props.keys()))
-
-        _, custom_props = get_class_schema(class_name)
-        if isinstance(existing_keys, list):
-            existing_keys.extend(custom_props)
-        else:
-            existing_keys = set(existing_keys) | set(custom_props)
+        existing_keys = sorted(set(custom_props) | set(cur_props.keys()))
         editor = PropertyEditor(self.root, cls, set(existing_keys), required)
 
         # Prefill required rows with current values
@@ -2106,54 +2015,10 @@ class SampleTreeGUI:
         except Exception:
             pass
 
-        # Determine required properties from file
-        try:
-            with open(REQUIRED_PROPERTIES_FILE, "r", encoding="utf-8") as f:
-                txt = f.read().strip()
-                if not txt:
-                    subclass_req_map = {}
-                else:
-                    try:
-                        subclass_req_map = json.loads(txt)
-                        if not isinstance(subclass_req_map, dict):
-                            raise ValueError("JSON root is not an object")
-                    except Exception:
-                        subclass_req_map = {}
-                        for line in txt.splitlines():
-                            line = line.split("#", 1)[0].strip()  # allow comments with #
-                            if not line:
-                                continue
-                            if ":" in line:
-                                cls_key, vals = line.split(":", 1)
-                            elif "=" in line:
-                                cls_key, vals = line.split("=", 1)
-                            else:
-                                # single-class single-key line
-                                parts = line.split()
-                                if len(parts) == 2:
-                                    cls_key, vals = parts[0], parts[1]
-                                else:
-                                    continue
-                            keys = [k.strip() for k in vals.split(",") if k.strip()]
-                            subclass_req_map[cls_key.strip()] = keys
-        except FileNotFoundError:
-            subclass_req_map = {}
-        required = subclass_req_map.get(class_name, [])
+        required, custom_props = get_class_schema(class_name)
 
-        # Collect existing keys for dropdown (filter by prefix type_)
-        existing_keys = []
-        if os.path.exists(DATABASE_KEYS_FILE):
-            with open(DATABASE_KEYS_FILE, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith(class_name + "_"):
-                        existing_keys.append(line[len(class_name) + 1:])
-
-        _, custom_props = get_class_schema(class_name)
-        if isinstance(existing_keys, list):
-            existing_keys.extend(custom_props)
-        else:
-            existing_keys = set(existing_keys) | set(custom_props)
+        # Collect existing keys for dropdown
+        existing_keys = sorted(set(custom_props))
         editor = PropertyEditor(self.root, cls, set(existing_keys), required)
         self.root.wait_window(editor)
         if editor.result is None:
@@ -2202,52 +2067,40 @@ class SampleTreeGUI:
 
                 # Load node types
                 nodes_types = ['any']
-                if os.path.exists(REQUIRED_PROPERTIES_FILE):
-                    with open(REQUIRED_PROPERTIES_FILE, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            line = line.split('#', 1)[0].strip()
-                            if not line:
-                                continue
-                            try:
-                                cls_key = line.split(':', 1)[0].strip()
-                                if cls_key not in nodes_types:
-                                    nodes_types.append(cls_key)
-                            except Exception:
-                                continue
-                    for r in ['Processing_Step', 'Sample']:
-                        if r in nodes_types:
-                            nodes_types.remove(r)
-                nodes_types = sorted(nodes_types)
+                try:
+                    with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
+                        schema = json.load(f)
+                        for cls_key in schema.keys():
+                            if cls_key not in ['Processing_Step', 'Sample']:
+                                nodes_types.append(cls_key)
+                except Exception:
+                    pass
+                nodes_types = sorted(list(set(nodes_types)))
                         
 
-                # Load database_keys
-                db_keys = []
                 self.additional_keys = ['id', 'entry_created_date']
-                if os.path.exists(DATABASE_KEYS_FILE):
-                    with open(DATABASE_KEYS_FILE, "r") as f:
-                        db_keys = self.additional_keys + sorted(set(line.strip() for line in f if line.strip()))
-                # Add 'id' and 'entry_created_date' as searchable property keys
-                db_keys.append("<Custom key...>")
+                
+                # Fetch keys directly from schema
+                def get_schema_keys(class_name=None):
+                    keys = set()
+                    try:
+                        with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
+                            schema = json.load(f)
+                            if class_name and class_name != "any":
+                                config = schema.get(class_name, {})
+                                keys.update(config.get("required", []))
+                                keys.update(config.get("custom", []))
+                            else:
+                                for config in schema.values():
+                                    keys.update(config.get("required", []))
+                                    keys.update(config.get("custom", []))
+                    except Exception:
+                        pass
+                    return sorted(list(keys))
                 
                 def update_db_display_keys():
                     db_display_keys = self.additional_keys.copy()
-                    if self.type_var.get() == "any":    # Show all keys
-                        for node in nodes_types:
-                            # if node == "any":
-                            #     continue
-                            prefix = node + "_"
-                            for key in db_keys:
-                                if key.startswith(prefix):
-                                    trimmed_key = key[len(prefix):]
-                                    if trimmed_key not in db_display_keys:
-                                        db_display_keys.append(trimmed_key)
-                    else:                           # Filter by selected node type
-                        prefix = self.type_var.get() + "_"
-                        for key in db_keys:
-                            if key.startswith(prefix):
-                                trimmed_key = key[len(prefix):]
-                                if trimmed_key not in db_display_keys:
-                                    db_display_keys.append(trimmed_key)
+                    db_display_keys.extend(get_schema_keys(self.type_var.get()))
                     db_display_keys.append("<Custom key...>")
                     return db_display_keys
                     
@@ -2277,9 +2130,10 @@ class SampleTreeGUI:
                         new_key = simpledialog.askstring("Custom key", "Enter custom property key:", parent=self)
                         if new_key:
                             self.key_var.set(new_key)
-                            if new_key not in db_keys and new_key != "":
-                                db_keys.insert(-1, self.type_var.get() + "_" + new_key)
-                                self.key_cb['values'] = update_db_display_keys()
+                            disp_keys = update_db_display_keys()
+                            if new_key not in disp_keys:
+                                disp_keys.insert(-1, new_key)
+                                self.key_cb['values'] = disp_keys
                     # If node type changes, update available keys
                     elif _event.widget == self.type_cb:
                         self.key_cb['values'] = update_db_display_keys()
