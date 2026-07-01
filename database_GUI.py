@@ -467,7 +467,7 @@ class SampleTreeGUI:
         file_menu.add_command(label="Load Multiple Trees", command=self.load_multiple_trees)
         file_menu.add_separator()
         file_menu.add_command(label="Save Tree", command=self.save_tree)
-        file_menu.add_command(label="Save, archive and close", command=self._save_archive_and_close)
+        file_menu.add_command(label="Save, Archive and Close", command=self._save_archive_and_close)
         file_menu.add_command(label="Close Selected Tree", command=self.close_selected_tree)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.on_closing)
@@ -488,7 +488,18 @@ class SampleTreeGUI:
         advanced_menu = tk.Menu(menubar, tearoff=0)
         advanced_menu.add_command(label="Add New Structure", command=lambda: AddClassDialog(self.root, None))
         advanced_menu.add_command(label="Import Legacy Keys", command=self.import_legacy_keys)
+        
+        # Settings Menu
+        settings_menu = tk.Menu(menubar, tearoff=0)
+        settings_menu.add_command(label="Backup Settings", command=self.open_backup_settings)
+        menubar.add_cascade(label="Settings", menu=settings_menu)
+        
         menubar.add_cascade(label="Advanced", menu=advanced_menu)
+        
+        # Help Menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="Help Documentation", command=self.open_help)
+        menubar.add_cascade(label="Help", menu=help_menu)
         
         # Check for restored schema
         import database_classes
@@ -550,7 +561,7 @@ class SampleTreeGUI:
         ttk.Button(top_bar, text="Expand All", command=self.expand_all_trees).pack(side="left", padx=2)
         ttk.Button(top_bar, text="Search", command=self.search_property).pack(side="left", padx=2)
         ttk.Button(top_bar, text="Save Tree", command=self.save_tree).pack(side="left", padx=2)
-        ttk.Button(top_bar, text="Save, archive and close", command=self._save_archive_and_close).pack(side="left", padx=2)
+        ttk.Button(top_bar, text="Save, Archive and Close", command=self._save_archive_and_close).pack(side="left", padx=2)
         
         # Hidden Rainbow Button for backward compatibility if needed by mode changes
         self.rainbow_active = False
@@ -603,6 +614,139 @@ class SampleTreeGUI:
             except Exception:
                 pass
 
+
+    def get_cache_file(self):
+        return os.path.join(BASE_DIR, ".db_cache.json")
+
+    def load_cache(self):
+        cache_file = self.get_cache_file()
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r") as f:
+                    import json
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    def save_cache(self, updates):
+        cache_data = self.load_cache()
+        cache_data.update(updates)
+        cache_file = self.get_cache_file()
+        try:
+            with open(cache_file, "w") as f:
+                import json
+                json.dump(cache_data, f)
+        except Exception:
+            pass
+
+    def open_backup_settings(self):
+        cache = self.load_cache()
+        current_backup = cache.get("secondary_backup_path", "")
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Backup Settings")
+        dialog.geometry("500x150")
+        dialog.grab_set()
+        
+        ttk.Label(dialog, text="Secondary Backup Folder (archived copies will also be saved here):").pack(anchor="w", padx=10, pady=(10, 5))
+        
+        frame = ttk.Frame(dialog)
+        frame.pack(fill="x", padx=10, pady=5)
+        
+        path_var = tk.StringVar(value=current_backup)
+        ttk.Entry(frame, textvariable=path_var).pack(side="left", fill="x", expand=True, padx=(0, 5))
+        
+        def browse():
+            folder = filedialog.askdirectory(initialdir=path_var.get() or BASE_DIR, title="Select Secondary Backup Folder")
+            if folder:
+                path_var.set(folder)
+                
+        ttk.Button(frame, text="Browse...", command=browse).pack(side="left")
+        
+        def save():
+            new_path = path_var.get().strip()
+            self.save_cache({"secondary_backup_path": new_path})
+            dialog.destroy()
+            messagebox.showinfo("Settings Saved", "Secondary backup location updated.", parent=self.root)
+            
+        ttk.Button(dialog, text="Save Settings", command=save).pack(pady=10)
+
+    def open_help(self):
+        help_file = os.path.join(BASE_DIR, "help.json")
+        help_data = {}
+        if os.path.exists(help_file):
+            try:
+                with open(help_file, "r") as f:
+                    import json
+                    help_data = json.load(f)
+            except Exception:
+                pass
+        
+        if not help_data:
+            messagebox.showinfo("Help", "Help documentation not found.", parent=self.root)
+            return
+            
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Help Documentation")
+        dialog.geometry("800x500")
+        
+        paned = ttk.PanedWindow(dialog, orient="horizontal")
+        paned.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Left side: topics
+        list_frame = ttk.Frame(paned)
+        paned.add(list_frame, weight=1)
+        
+        topics_list = tk.Listbox(list_frame, font=("TkDefaultFont", 11))
+        topics_list.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=topics_list.yview)
+        scrollbar.pack(side="right", fill="y")
+        topics_list.config(yscrollcommand=scrollbar.set)
+        
+        # Right side: content
+        text_frame = ttk.Frame(paned)
+        paned.add(text_frame, weight=3)
+        
+        content_text = tk.Text(text_frame, wrap="word", font=("TkDefaultFont", 11), state="disabled")
+        content_text.pack(side="left", fill="both", expand=True)
+        t_scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=content_text.yview)
+        t_scrollbar.pack(side="right", fill="y")
+        content_text.config(yscrollcommand=t_scrollbar.set)
+        
+        topics = list(help_data.keys())
+        for topic in topics:
+            topics_list.insert(tk.END, topic)
+            
+        def on_select(evt):
+            sel = topics_list.curselection()
+            if not sel: return
+            idx = sel[0]
+            topic = topics_list.get(idx)
+            content = help_data.get(topic, "")
+            
+            content_text.config(state="normal")
+            content_text.delete(1.0, tk.END)
+            content_text.insert(tk.END, f"{topic}\n", "header")
+            content_text.insert(tk.END, f"\n{content}")
+            
+            content_text.tag_configure("header", font=("TkDefaultFont", 14, "bold"))
+            content_text.config(state="disabled")
+            
+        topics_list.bind("<<ListboxSelect>>", on_select)
+        if topics:
+            topics_list.selection_set(0)
+            on_select(None)
+            
+    def _archive_to_secondary(self, tree, out_name, sort_mode):
+        cache = self.load_cache()
+        sec_path = cache.get("secondary_backup_path")
+        if sec_path and os.path.isdir(sec_path):
+            try:
+                out_path = os.path.join(sec_path, out_name)
+                serialize_tree(tree, out_path, sort_mode=sort_mode)
+            except Exception as e:
+                print(f"Failed to archive to secondary location: {e}")
 
     def open_structure_browser(self):
         StructureBrowser(self.root)
@@ -1105,12 +1249,7 @@ class SampleTreeGUI:
         self.sort_var.set("none")
         self._hide_discover_button()
         self.refresh_status(f"Created new tree: {os.path.basename(filename)}")
-        try:
-            with open(os.path.join(BASE_DIR, ".db_cache.json"), "w") as f:
-                import json
-                json.dump({"last_tree": filename}, f)
-        except Exception:
-            pass
+        self.save_cache({"last_tree": filename})
         self._refresh_after_tree_change(focus_node_id=root_id)
 
     def load_tree(self):
@@ -1138,12 +1277,7 @@ class SampleTreeGUI:
             self._hide_discover_button()
             self.refresh_status(f"Loaded {os.path.basename(filename)}")
             self.last_action_was_save_archive_close = False
-            try:
-                with open(os.path.join(BASE_DIR, ".db_cache.json"), "w") as f:
-                    import json
-                    json.dump({"last_tree": filename}, f)
-            except Exception:
-                pass
+            self.save_cache({"last_tree": filename})
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load: {e}")
 
@@ -1305,6 +1439,7 @@ class SampleTreeGUI:
                     out_name = f"{root}_{ts}{ext}" if ext else f"{root}_{ts}"
                     out_path = os.path.join(archive_dir, out_name)
                     serialize_tree(tree, out_path, sort_mode=sort_mode)
+                    self._archive_to_secondary(tree, out_name, sort_mode)
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to save/archive tree: {e}")
                     return
@@ -1341,6 +1476,7 @@ class SampleTreeGUI:
                         root_node = self.tree_obj.get_node(self.tree_obj.root)
                         sort_mode = root_node.data.get("sort_mode", "none") if root_node else "none"
                         serialize_tree(self.tree_obj, out_path, sort_mode=sort_mode)
+                        self._archive_to_secondary(self.tree_obj, out_name, sort_mode)
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to save/archive tree: {e}")
                     return
@@ -1913,6 +2049,7 @@ class SampleTreeGUI:
                     out_name = f"{root}_{ts}{ext}" if ext else f"{root}_{ts}"
                     out_path = os.path.join(archive_dir, out_name)
                     serialize_tree(info["tree"], out_path, sort_mode=sort_mode)
+                    self._archive_to_secondary(info["tree"], out_name, sort_mode)
                 self._clear_loaded_trees()
                 self.refresh_status("Ready")
                 self.last_action_was_save_archive_close = True
@@ -1942,6 +2079,7 @@ class SampleTreeGUI:
         new_filename = f"{root}_{ts}{ext}" if ext else f"{root}_{ts}"
         try:
             serialize_tree(self.tree_obj, new_filename, sort_mode=self.sort_mode)
+            self._archive_to_secondary(self.tree_obj, os.path.basename(new_filename), self.sort_mode)
             self.refresh_status(f"Saved as {os.path.basename(new_filename)}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save: {e}")
