@@ -454,7 +454,7 @@ class SampleTreeGUI:
         self.sort_state = {}
         self.properties_panel = None
         self.properties_panel_tree = None
-        self.last_action_was_save_archive_close = False
+        self.unsaved_changes = set()
         
         # Menu Bar
         menubar = tk.Menu(self.root)
@@ -602,18 +602,70 @@ class SampleTreeGUI:
 
         self.refresh_status("Ready")
 
-        cache_file = os.path.join(BASE_DIR, ".db_cache.json")
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, "r") as f:
-                    import json
-                    cache = json.load(f)
-                    last_tree = cache.get("last_tree")
-                    if last_tree and os.path.exists(last_tree):
-                        self._load_specific_tree(last_tree)
-            except Exception:
-                pass
+        try:
+            cache = self.load_cache()
+            last_trees = cache.get("last_trees", [])
+            mode = cache.get("display_mode", "single")
+            
+            # backwards compatibility with old cache
+            if not last_trees and cache.get("last_tree"):
+                last_trees = [cache.get("last_tree")]
+                
+            valid_trees = [t for t in last_trees if os.path.exists(t)]
+            
+            if mode == "multi" and valid_trees:
+                self._load_multiple_specific_trees(valid_trees)
+            elif valid_trees:
+                self._load_specific_tree(valid_trees[0])
+        except Exception:
+            pass
 
+
+    def update_last_trees_cache(self):
+        if getattr(self, "display_mode", "single") == "single":
+            if getattr(self, "current_file", None):
+                self.save_cache({"last_trees": [self.current_file], "display_mode": "single"})
+            else:
+                self.save_cache({"last_trees": [], "display_mode": "single"})
+        else:
+            paths = [info["file"] for info in self.multi_trees.values()]
+            self.save_cache({"last_trees": paths, "display_mode": "multi"})
+
+    def _load_multiple_specific_trees(self, filenames):
+        loaded = {}
+        failed = []
+        for idx, path in enumerate(filenames):
+            try:
+                tree = deserialize_tree(path)
+                system_node = tree.get_node(tree.root)
+                system_name = system_node.data.get("Sample_System", "") if system_node else ""
+                sort_mode = system_node.data.get("sort_mode", "none") if system_node else "none"
+                key = f"{idx:04d}_{os.path.basename(path)}"
+                loaded[key] = {
+                    "tree": tree,
+                    "file": path,
+                    "label": f"{system_name}" if system_name else os.path.basename(path),
+                }
+                self.sort_state[key] = sort_mode
+            except Exception as e:
+                failed.append(f"{os.path.basename(path)}: {e}")
+
+        if not loaded:
+            return
+
+        self.display_mode = "multi"
+        self.tree_obj = None
+        self.current_file = None
+        self.multi_trees = loaded
+        self.sort_var.set("none")
+        self.populate_multi_treeview()
+        self.parent_label_var.set("-")
+        self.class_cb['values'] = []
+        self.class_var.set("")
+        self._hide_discover_button()
+        if hasattr(self, 'unsaved_changes'):
+            self.unsaved_changes.clear()
+        self.refresh_status(f"Loaded {len(loaded)} trees.")
 
     def get_cache_file(self):
         return os.path.join(BASE_DIR, ".db_cache.json")
@@ -746,7 +798,7 @@ class SampleTreeGUI:
                 out_path = os.path.join(sec_path, out_name)
                 serialize_tree(tree, out_path, sort_mode=sort_mode)
             except Exception as e:
-                print(f"Failed to archive to secondary location: {e}")
+                messagebox.showwarning("Backup Failed", f"Failed to archive to secondary location:\n{e}", parent=self.root)
 
     def open_structure_browser(self):
         StructureBrowser(self.root)
@@ -1097,6 +1149,7 @@ class SampleTreeGUI:
                             data={"obj": new_obj})
         
         self._refresh_after_tree_change(system_key=dest_ctx_system_key, focus_node_id=new_obj.id)
+        self.unsaved_changes.add(dest_ctx_system_key)
         if self.display_mode == "multi":
             self.refresh_status(f"Copied {class_name} node.")
         else:
@@ -1109,10 +1162,10 @@ class SampleTreeGUI:
 
 
     def on_closing(self):
-        if getattr(self, "last_action_was_save_archive_close", False) or (not self.tree_obj and not self.multi_trees):
+        if not getattr(self, "unsaved_changes", set()):
             self.root.destroy()
             return
-        answer = messagebox.askyesnocancel("Quit","'Yes' to save, archive and close, or 'No' to discard recent changes")
+        answer = messagebox.askyesnocancel("Quit", "You have unsaved changes. 'Yes' to save and archive them, or 'No' to discard.")
         if answer is True:  # Yes
             self._save_archive_and_close()
             self.root.destroy()
@@ -1131,6 +1184,9 @@ class SampleTreeGUI:
         self.class_cb['values'] = []
         self.class_var.set("")
         self.rainbow_active = False
+        if hasattr(self, 'unsaved_changes'):
+            self.unsaved_changes.clear()
+        self.update_last_trees_cache()
 
     def _selected_node_context(self):
         sel = self.treeview.selection()
@@ -1186,7 +1242,6 @@ class SampleTreeGUI:
         return f"{root_iid}::{node_id}"
 
     def _refresh_after_tree_change(self, system_key=None, focus_node_id=None):
-        self.last_action_was_save_archive_close = False
         if self.display_mode == "multi":
             self.populate_multi_treeview(expand_system_key=system_key, focus_node_id=focus_node_id)
         else:
@@ -1249,7 +1304,7 @@ class SampleTreeGUI:
         self.sort_var.set("none")
         self._hide_discover_button()
         self.refresh_status(f"Created new tree: {os.path.basename(filename)}")
-        self.save_cache({"last_tree": filename})
+        self.update_last_trees_cache()
         self._refresh_after_tree_change(focus_node_id=root_id)
 
     def load_tree(self):
@@ -1276,8 +1331,7 @@ class SampleTreeGUI:
             # hide discover button once a tree is loaded
             self._hide_discover_button()
             self.refresh_status(f"Loaded {os.path.basename(filename)}")
-            self.last_action_was_save_archive_close = False
-            self.save_cache({"last_tree": filename})
+            self.update_last_trees_cache()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load: {e}")
 
@@ -1335,7 +1389,7 @@ class SampleTreeGUI:
         self.class_cb['values'] = []
         self.class_var.set("")
         self._hide_discover_button()
-        self.last_action_was_save_archive_close = False
+        self.update_last_trees_cache()
 
         if failed:
             self.refresh_status(f"Loaded {len(loaded)} trees ({len(failed)} failed).")
@@ -1386,7 +1440,7 @@ class SampleTreeGUI:
         self.class_cb['values'] = []
         self.class_var.set("")
         self._hide_discover_button()
-        self.last_action_was_save_archive_close = False
+        self.update_last_trees_cache()
 
         if failed:
             self.refresh_status(f"Loaded {len(loaded)} trees ({len(failed)} failed).")
@@ -1447,6 +1501,9 @@ class SampleTreeGUI:
             del self.multi_trees[system_key]
             if system_key in self.sort_state:
                 del self.sort_state[system_key]
+            
+            self.unsaved_changes.discard(system_key)
+            self.update_last_trees_cache()
             
             if not self.multi_trees:
                 self.display_mode = "single"
@@ -1593,6 +1650,7 @@ class SampleTreeGUI:
                 sort_mode = self.sort_state.get(system_key, "none")
                 serialize_tree(info["tree"], info["file"], sort_mode=sort_mode)
                 saved += 1
+            self.unsaved_changes.clear()
             self.refresh_status(f"Saved {saved} trees.")
             return
 
@@ -1606,6 +1664,7 @@ class SampleTreeGUI:
             if not self.current_file:
                 return
         serialize_tree(self.tree_obj, self.current_file, sort_mode=self.sort_mode)
+        self.unsaved_changes.clear()
         self.refresh_status("Tree saved.")
     
     # ---------- Discover Required Properties Option (integrated into GUI) ----------
@@ -2027,6 +2086,7 @@ class SampleTreeGUI:
 
         # Refresh treeview to reflect any changes
         self._refresh_after_tree_change(system_key=ctx["system_key"], focus_node_id=node_id)
+        self.unsaved_changes.add(ctx["system_key"])
         if self.display_mode == "multi":
             self.refresh_status(f"Edited {class_name} node in {os.path.basename(ctx['file'])}.")
         else:
@@ -2052,7 +2112,6 @@ class SampleTreeGUI:
                     self._archive_to_secondary(info["tree"], out_name, sort_mode)
                 self._clear_loaded_trees()
                 self.refresh_status("Ready")
-                self.last_action_was_save_archive_close = True
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to archive trees: {e}")
             return
@@ -2087,7 +2146,6 @@ class SampleTreeGUI:
         try:
             self._clear_loaded_trees()
             self.refresh_status("Ready")
-            self.last_action_was_save_archive_close = True
         except Exception as e:
             messagebox.showerror("Error", f"Failed to close tree: {e}")
 
@@ -2174,6 +2232,7 @@ class SampleTreeGUI:
                       parent=parent_id,
                       data={"obj": obj})
         self._refresh_after_tree_change(system_key=ctx["system_key"], focus_node_id=obj.id)
+        self.unsaved_changes.add(ctx["system_key"])
         if self.display_mode == "multi":
             self.refresh_status(f"Added {class_name} node in {os.path.basename(ctx['file'])}.")
         else:

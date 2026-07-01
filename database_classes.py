@@ -123,9 +123,6 @@ class Sample:
         """ return a string that unambiguously describes the object"""
         return f"{self.__class__.__name__}(id={self.id}, created_date={self.entry_created_date}, properties={self.properties})"
     
-    def add_property(self, key, value):
-        """Add a custom property."""
-        self.properties[key] = value
 
 
 
