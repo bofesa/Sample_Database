@@ -105,7 +105,7 @@ Place and run it from a working folder that contains (or can create) these along
    - Add new properties on the fly.
    - Use the **Advanced -> Add New Structure** menu to build completely custom `Samples` or `Processing Steps` directly in the GUI!
 4. Create a new tree:
-   - click **New Tree**
+   - click **File -> New Tree**
    - enter a sample system name
    - save JSON in `databases/`
 5. Add nodes:
@@ -114,14 +114,17 @@ Place and run it from a working folder that contains (or can create) these along
    - fill required/optional properties
    - click **Create Node**
 6. Save progress:
-   - click **Save Tree** for normal save
-   - click **Save with Timestamp and Close** to version and close cleanly
+   - click **File -> Save Tree** for normal save
+   - click **File -> Save, Archive and Close** to cleanly save, version it locally, and also copy it to your configured secondary backup folder.
 7. Load existing data:
-   - **Load Tree** for one JSON file
-   - **Open All Trees** to browse all JSON files in `databases/`
+   - **File -> Load Tree** for one JSON file
+   - **File -> Load Multiple Trees** to browse and open several JSON files in `databases/`
 8. Search and inspect:
-   - use **Search** to find properties across loaded tree(s)
-   - use **View Properties** / **Edit Node** on selected items
+   - use **Tools -> Search** to find properties across loaded tree(s)
+   - use **Edit Node** on selected items in the bottom action bar
+9. Help & Settings:
+   - **Settings -> Backup Settings**: Setup a secondary folder path to maintain remote/cloud backups.
+   - **Help -> Help Documentation**: Provides a quick overview of how the program works via `help.json`.
 
 ## JSON Tree File Format
 

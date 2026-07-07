@@ -19,7 +19,6 @@ else:
 
 DATABASE_KEYS_FILE = os.path.join(BASE_DIR, "database_keys.txt")
 REQUIRED_PROPERTIES_FILE = os.path.join(BASE_DIR, "required_properties.txt")
-
 DATABASE_STRUCTURE_FILE = os.path.join(BASE_DIR, "database_structure.json")
 
 
@@ -31,18 +30,6 @@ class Sample:
         for prop in self.required_properties:
             if prop not in kwargs:
                 raise ValueError(f"Missing required property for {self.__class__.__name__}: {prop}")
-            
-        # # Check if any kwargs look like typos of existing properties
-        # with open(DATABASE_KEYS_FILE, 'a+') as f:
-        #     f.seek(0)
-        #     existing_keys = f.read().splitlines()
-        #     type_prefix = self.type + '_'
-        #     type_keys = [key[len(type_prefix):] for key in existing_keys if key.startswith(type_prefix)]
-        #     for kwarg_key in kwargs.keys():
-        #         # Check for possible typos: if the key is similar to an existing key for this type
-        #         # For simplicity, warn if the key is not in type_keys and not in required_properties
-        #         if kwarg_key not in type_keys and kwarg_key not in self.required_properties:
-        #             print(f"Warning: '{kwarg_key}' is not a known property for {self.type}. Check for typos or add it intentionally.")
 
         # # Check if any of the kwargs are auto-generated properties and delete them if so
         # auto_props = ['id', 'entry_created_date']
@@ -140,63 +127,8 @@ class Sample:
         """ return a string that unambiguously describes the object"""
         return f"{self.__class__.__name__}(id={self.id}, created_date={self.entry_created_date}, properties={self.properties})"
     
-    def add_property(self, key, value):
-        """Add a custom property."""
-        self.properties[key] = value
 
 
-class Wafer(Sample):
-    def __init__(self, **kwargs):
-        required_properties = ['material',]
-        super().__init__(required_properties, **kwargs)
-        self.material = kwargs['material']
-        self.permitted_children = ['Chip', 'SEM_stub', 'Annealing', 'XRay_analysis', 'Electrical_measurement', 'Micromechanical_testing', 'Swissmapper']
-        # self.wafer_properties = kwargs  # Custom properties can be added as key=value pairs
-
-
-class Chip(Sample):
-    def __init__(self, **kwargs):
-        required_properties = []
-        super().__init__(required_properties, **kwargs)
-        self.permitted_children = ['SEM_stub', 'Annealing', 'Chip', 'Imaging', 'XRay_analysis', 'Electrical_measurement', 'Micromechanical_testing', 'Swissmapper']
-
-
-class SEM_stub(Sample):
-    def __init__(self, **kwargs):
-        required_properties = ['stub_diameter',]
-        super().__init__(required_properties, **kwargs)
-        self.stub_diameter = kwargs['stub_diameter']
-        self.permitted_children = ['Pillar_array', 'Tensile_bar', 'TEM_lamella', 'Imaging', 'XRay_analysis', 'Micromechanical_testing', 'Swissmapper', 'Liftout', 'EBSD', 'FIB_milling']
-        # self.stub_properties = kwargs  # Custom properties can be added as key=value pairs
-
-
-class TEM_lamella(Sample):
-    def __init__(self, **kwargs):
-        required_properties = ['grid_material',]
-        super().__init__(required_properties, **kwargs)
-        self.grid_material = kwargs['grid_material']
-        self.permitted_children = ['Liftout', 'Imaging', 'TKD', 'APT_tip', 'EBSD', 'Micromechanical_testing', 'FIB_milling',]
-
-
-class Pillar_array(Sample):
-    def __init__(self, **kwargs):
-        required_properties = []
-        super().__init__(required_properties, **kwargs)
-        self.permitted_children = ['TEM_lamella', 'FIB_milling', 'Pillar_compression', 'Imaging', 'EBSD', 'Micromechanical_testing','Liftout',]
-
-
-class Tensile_bar(Sample):
-    def __init__(self, **kwargs):
-        required_properties = []
-        super().__init__(required_properties, **kwargs)
-        self.permitted_children = ['TEM_lamella', 'FIB_milling', 'Imaging', 'TKD', 'EBSD', 'Micromechanical_testing','Liftout',]
-
-
-class APT_tip(Sample):
-    def __init__(self, **kwargs):
-        required_properties = []
-        super().__init__(required_properties, **kwargs)
-        self.permitted_children = ['FIB_milling', 'Imaging',]
 
 
 
