@@ -27,7 +27,16 @@
             "ALD_cycles",
             "name",
             "deposition_Ar_flow",
-            "deposition_cycles"
+            "deposition_cycles",
+            "Chamber",
+            "power",
+            "u",
+            "I",
+            "base_pressure",
+            "process_pressure",
+            "wafer_diameter",
+            "current_mode",
+            "chamber"
         ],
         "permitted_children": [
             "Chip",
@@ -53,6 +62,7 @@
             "wafer_location",
             "sputter_flow",
             "sputter_current",
+            "date",
             "deposition_pressure"
         ],
         "permitted_children": [
@@ -162,7 +172,7 @@
         "permitted_children": [
             "Chip",
             "SEM_stub",
-			"Annealing"
+            "Annealing"
         ]
     },
     "FIB_milling": {
@@ -226,7 +236,9 @@
     "EBSD": {
         "base": "Processing_Step",
         "required": [],
-        "custom": [],
+        "custom": [
+            "folder"
+        ],
         "permitted_children": []
     },
     "Micromechanical_testing": {
