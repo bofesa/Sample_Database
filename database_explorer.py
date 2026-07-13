@@ -2,8 +2,8 @@ from database_GUI import launch_gui
 launch_gui()
 
 ### to build as exe, run:
-#   python -m PyInstaller --onedir -w --icon=db.ico --distpath "C:\path\to\output" --workpath "C:\path\to\build" --specpath "C:\path\to\spec" database_explorer.py
-# in this directory
+#   python -m PyInstaller --onedir -w --icon=db.ico --add-data "db.ico;." --add-data "help.json;." --add-data "database_structure.json;." database_explorer.py
+# or simply double-click the build.bat file.
 
 # Features to add:
 # - add a "delete" button to delete the current entry (make sure to ask for confirmation before deleting)
