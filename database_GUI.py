@@ -2,6 +2,8 @@ from database_classes import *
 from datetime import datetime
 import colorsys
 import threading
+import os
+import tkinter as tk
 
 # -------- GUI + Tree persistence utilities --------
 
@@ -575,22 +577,31 @@ class SampleTreeGUI:
         ttk.Radiobutton(sort_frame, text="Name", variable=self.sort_var, value="name", command=self.on_sort_changed).pack(side="left")
         ttk.Radiobutton(sort_frame, text="Date Created", variable=self.sort_var, value="date_created", command=self.on_sort_changed).pack(side="left")
 
-        # 4. Action Frame (Add Child / Node Actions)
+        # 4. Action Frame (Selected Node Actions)
         action_frame = ttk.LabelFrame(main, text="Selected Node Actions")
         action_frame.pack(fill="x", pady=4)
 
-        ttk.Label(action_frame, text="Parent Node:").grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        # Row 0: Selected Node info
+        ttk.Label(action_frame, text="Selected Node:").grid(row=0, column=0, sticky="w", padx=4, pady=4)
         self.parent_label_var = tk.StringVar(value="-")
-        ttk.Label(action_frame, textvariable=self.parent_label_var).grid(row=0, column=1, sticky="w", padx=2, pady=2)
+        ttk.Label(action_frame, textvariable=self.parent_label_var, font=("TkDefaultFont", 9, "bold")).grid(row=0, column=1, sticky="w", padx=4, pady=4)
 
-        ttk.Label(action_frame, text="Child Class:").grid(row=1, column=0, sticky="w", padx=2, pady=2)
+        # Row 1: Node Actions (Edit, Copy, Delete)
+        node_actions_frame = ttk.Frame(action_frame)
+        node_actions_frame.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=2)
+        ttk.Button(node_actions_frame, text="Edit Node", command=self.edit_node).pack(side="left", padx=(0, 4))
+        ttk.Button(node_actions_frame, text="Copy Node", command=self.copy_node).pack(side="left", padx=4)
+        ttk.Button(node_actions_frame, text="Delete Node", command=self.delete_node).pack(side="left", padx=4)
+
+        # Row 2: Add Child section
+        child_frame = ttk.Frame(action_frame)
+        child_frame.grid(row=2, column=0, columnspan=2, sticky="w", padx=4, pady=2)
+        ttk.Label(child_frame, text="Child Class:").pack(side="left", padx=(0, 4))
         self.class_var = tk.StringVar()
-        self.class_cb = ttk.Combobox(action_frame, textvariable=self.class_var, width=28, state="readonly")
-        self.class_cb.grid(row=1, column=1, sticky="w", padx=2, pady=2)
-
-        ttk.Button(action_frame, text="Edit Node", command=self.edit_node).grid(row=2, column=0, padx=2, pady=6, sticky="w")
-        ttk.Button(action_frame, text="Copy Node", command=self.copy_node).grid(row=2, column=1, padx=2, pady=6, sticky="w")
-        ttk.Button(action_frame, text="Create Node", command=self.add_child_node).grid(row=2, column=2, padx=2, pady=6, sticky="w")
+        self.class_cb = ttk.Combobox(child_frame, textvariable=self.class_var, width=28, state="readonly")
+        self.class_cb.pack(side="left", padx=4)
+        ttk.Button(child_frame, text="Create Child Node", command=self.add_child_node).pack(side="left", padx=4)
+        
 
         # 5. Status Bar
         status_frame = ttk.Frame(main)
@@ -808,13 +819,14 @@ class SampleTreeGUI:
 
     def on_sort_changed(self):
         """Called when sort mode changes"""
+        states = self._get_open_states()
         if self.display_mode == "single":
             self.sort_mode = self.sort_var.get()
-            self.populate_treeview()
+            self.populate_treeview(restore_states=states)
         elif self.display_mode == "multi":
             for system_key in self.multi_trees.keys():
                 self.sort_state[system_key] = self.sort_var.get()
-            self.populate_multi_treeview()
+            self.populate_multi_treeview(restore_states=states)
 
     def get_sort_children(self, tree, parent_id):
         """Get children of a node sorted according to current sort_mode"""
@@ -1241,11 +1253,49 @@ class SampleTreeGUI:
             return root_iid
         return f"{root_iid}::{node_id}"
 
+    def _get_open_states(self):
+        states = {}
+        if getattr(self, "treeview", None) is None:
+            return states
+        def traverse(item):
+            try:
+                states[item] = self.treeview.item(item, "open")
+            except Exception:
+                pass
+            for child in self.treeview.get_children(item):
+                traverse(child)
+        for item in self.treeview.get_children(""):
+            traverse(item)
+        return states
+
     def _refresh_after_tree_change(self, system_key=None, focus_node_id=None):
+        states = self._get_open_states()
         if self.display_mode == "multi":
-            self.populate_multi_treeview(expand_system_key=system_key, focus_node_id=focus_node_id)
+            self.populate_multi_treeview(expand_system_key=system_key, focus_node_id=focus_node_id, restore_states=states)
         else:
-            self.populate_treeview()
+            self.populate_treeview(restore_states=states)
+            if focus_node_id and self.tree_obj:
+                path = []
+                cur = focus_node_id
+                while True:
+                    node = self.tree_obj.get_node(cur)
+                    if node is None:
+                        break
+                    path.append(cur)
+                    parent = self.tree_obj.parent(cur)
+                    if parent is None:
+                        break
+                    cur = parent.identifier
+                for nid in reversed(path):
+                    try:
+                        self.treeview.item(nid, open=True)
+                    except Exception:
+                        pass
+                try:
+                    self.treeview.selection_set(focus_node_id)
+                    self.treeview.see(focus_node_id)
+                except Exception:
+                    pass
 
     def _hide_discover_button(self):
         if self.discover_btn:
@@ -1703,7 +1753,9 @@ class SampleTreeGUI:
             "#FF00BF",  # rose
         ]
 
-    def _activate_rainbow_mode(self, colours):
+    def _activate_rainbow_mode(self, colours, restore_states=None):
+        if restore_states is None:
+            restore_states = {}
         try:
             self.treeview.delete(*self.treeview.get_children())
             if not self.tree_obj:
@@ -1723,16 +1775,25 @@ class SampleTreeGUI:
                     pass
                 self.treeview.insert(parent_tv, "end", iid=node.identifier, text=text, tags=(color_tag,))
                 try:
-                    self.treeview.item(node.identifier, open=True)
+                    if node.identifier in restore_states:
+                        self.treeview.item(node.identifier, open=restore_states[node.identifier])
+                    else:
+                        self.treeview.item(node.identifier, open=True)
                 except Exception:
                     pass
                 for child in self.get_sort_children(self.tree_obj, node_id):
                     add(child.identifier, depth + 1)
 
             add(self.tree_obj.root)
-            for iid in self.treeview.get_children():
+            if not restore_states:
+                for iid in self.treeview.get_children():
+                    try:
+                        self.treeview.item(iid, open=True)
+                    except Exception:
+                        pass
+            elif self.tree_obj.root in restore_states:
                 try:
-                    self.treeview.item(iid, open=True)
+                    self.treeview.item(self.tree_obj.root, open=restore_states[self.tree_obj.root])
                 except Exception:
                     pass
         except Exception as e:
@@ -1744,29 +1805,33 @@ class SampleTreeGUI:
         if not (has_single or has_multi):
             messagebox.showinfo("Rainbow Mode", "Load a tree first.")
             return
+        states = self._get_open_states()
         if not self.rainbow_active:
             self.rainbow_active = True
             if self.display_mode == "single":
-                self._activate_rainbow_mode(self.rainbow_colours())
+                self._activate_rainbow_mode(self.rainbow_colours(), restore_states=states)
             else:
-                self.populate_multi_treeview()
+                self.populate_multi_treeview(restore_states=states)
         else:
             self.rainbow_active = False
             if self.display_mode == "single":
-                self.populate_treeview()
+                self.populate_treeview(restore_states=states)
             else:
-                self.populate_multi_treeview()
+                self.populate_multi_treeview(restore_states=states)
 
-    def populate_treeview(self):
+    def populate_treeview(self, restore_states=None):
+        if restore_states is None:
+            restore_states = {}
+
         self.treeview_index = {}
         self.treeview_system_iids = {}
 
         if self.display_mode == "multi":
-            self.populate_multi_treeview()
+            self.populate_multi_treeview(restore_states=restore_states)
             return
 
         if self.rainbow_active:
-            self._activate_rainbow_mode(self.rainbow_colours())
+            self._activate_rainbow_mode(self.rainbow_colours(), restore_states=restore_states)
             return
 
         self.treeview.delete(*self.treeview.get_children())
@@ -1799,20 +1864,32 @@ class SampleTreeGUI:
             self.treeview.insert(parent_tv, "end", iid=node.identifier, text=text, tags=tags)
             # ensure the inserted node is expanded
             try:
-                self.treeview.item(node.identifier, open=True)
+                if node.identifier in restore_states:
+                    self.treeview.item(node.identifier, open=restore_states[node.identifier])
+                else:
+                    self.treeview.item(node.identifier, open=True)
             except Exception:
                 pass
             for child in self.get_sort_children(self.tree_obj, node_id):
                 add(child.identifier)
         add(self.tree_obj.root)
         # make sure top-level items are expanded as well
-        try:
-            for iid in self.treeview.get_children():
-                self.treeview.item(iid, open=True)
-        except Exception:
-            pass
+        if not restore_states:
+            try:
+                for iid in self.treeview.get_children():
+                    self.treeview.item(iid, open=True)
+            except Exception:
+                pass
+        elif self.tree_obj.root in restore_states:
+            try:
+                self.treeview.item(self.tree_obj.root, open=restore_states[self.tree_obj.root])
+            except Exception:
+                pass
 
-    def populate_multi_treeview(self, expand_system_key=None, focus_node_id=None):
+    def populate_multi_treeview(self, expand_system_key=None, focus_node_id=None, restore_states=None):
+        if restore_states is None:
+            restore_states = {}
+
         self.treeview.delete(*self.treeview.get_children())
         self.treeview_index = {}
         self.treeview_system_iids = {}
@@ -1842,7 +1919,12 @@ class SampleTreeGUI:
                 except Exception:
                     tags = ()
             self.treeview.insert(parent_iid, "end", iid=node_iid, text=self.node_text(node), tags=tags)
-            self.treeview.item(node_iid, open=bool(expand_this_system))
+            
+            if node_iid in restore_states:
+                is_open = restore_states[node_iid]
+            else:
+                is_open = bool(expand_this_system)
+            self.treeview.item(node_iid, open=is_open)
             self.treeview_index[node_iid] = {"system_key": system_key, "node_id": node_id}
             for child in self.get_sort_children(tree, node_id):
                 add_node(system_key, tree, child.identifier, node_iid, expand_this_system, depth + 1)
@@ -1872,7 +1954,12 @@ class SampleTreeGUI:
                 except Exception:
                     pass
             self.treeview.insert("", "end", iid=top_iid, text=top_text, tags=top_tags)
-            self.treeview.item(top_iid, open=bool(expand_system_key and expand_system_key == system_key))
+            
+            if top_iid in restore_states:
+                is_open = restore_states[top_iid]
+            else:
+                is_open = bool(expand_system_key and expand_system_key == system_key)
+            self.treeview.item(top_iid, open=is_open)
             self.treeview_index[top_iid] = {"system_key": system_key, "node_id": tree.root}
             for child in self.get_sort_children(tree, tree.root):
                 add_node(system_key, tree, child.identifier, top_iid, expand_system_key and expand_system_key == system_key, 1)
@@ -2237,6 +2324,41 @@ class SampleTreeGUI:
             self.refresh_status(f"Added {class_name} node in {os.path.basename(ctx['file'])}.")
         else:
             self.refresh_status(f"Added {class_name} node.")
+
+    def delete_node(self):
+        ctx = self._selected_node_context()
+        if not ctx:
+            messagebox.showwarning("Select", "Select a node to delete first.")
+            return
+
+        if ctx["is_system_root"]:
+            messagebox.showwarning("Not Allowed", "Cannot delete the SYSTEM root node.")
+            return
+
+        node = ctx["node"]
+        class_name = node.tag
+        node_label = node.tag
+        answer = messagebox.askyesno(
+            "Confirm Delete",
+            f"Delete selected node '{node_label}' and all its subnodes?",
+            parent=self.root
+        )
+        if not answer:
+            return
+
+        tree_obj = ctx["tree"]
+        try:
+            tree_obj.remove_subtree(node.identifier)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete node: {e}")
+            return
+
+        self._refresh_after_tree_change(system_key=ctx["system_key"])
+        self.unsaved_changes.add(ctx["system_key"])
+        if self.display_mode == "multi":
+            self.refresh_status(f"Deleted {class_name} node from {os.path.basename(ctx['file'])}.")
+        else:
+            self.refresh_status(f"Deleted {class_name} node.")
 
     # ---------- Search Property Window ----------
     def search_property(self):
@@ -2643,6 +2765,15 @@ class SampleTreeGUI:
 # ---------- Main Launch ----------
 def launch_gui():
     root = tk.Tk()
+    icon_path = os.path.join(BASE_DIR, "db.ico")
+    try:
+        root.iconbitmap(icon_path)
+    except Exception:
+        pass
+    try:
+        root.iconphoto(False, tk.PhotoImage(file=icon_path))
+    except Exception:
+        pass
     root.geometry("1280x820")
     # action = show_discover_properties_window(root)
     # if action == "discover":

@@ -2,7 +2,7 @@ from database_GUI import launch_gui
 launch_gui()
 
 ### to build as exe, run:
-#   pyinstaller --onedir -w --icon=db.ico 'database_explorer.py'
+#   python -m PyInstaller --onedir -w --icon=db.ico --distpath "C:\path\to\output" --workpath "C:\path\to\build" --specpath "C:\path\to\spec" database_explorer.py
 # in this directory
 
 # Features to add:
