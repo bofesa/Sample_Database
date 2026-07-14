@@ -493,6 +493,9 @@ class SampleTreeGUI:
         
         # Settings Menu
         settings_menu = tk.Menu(menubar, tearoff=0)
+        self.auto_load_startup = tk.BooleanVar(value=True)
+        settings_menu.add_checkbutton(label="Auto-Load Databases on Startup", variable=self.auto_load_startup, command=self.toggle_auto_load)
+        settings_menu.add_separator()
         settings_menu.add_command(label="Backup Settings", command=self.open_backup_settings)
         menubar.add_cascade(label="Settings", menu=settings_menu)
         
@@ -615,22 +618,27 @@ class SampleTreeGUI:
 
         try:
             cache = self.load_cache()
-            last_trees = cache.get("last_trees", [])
-            mode = cache.get("display_mode", "single")
+            self.auto_load_startup.set(cache.get("auto_load_startup", True))
             
-            # backwards compatibility with old cache
-            if not last_trees and cache.get("last_tree"):
-                last_trees = [cache.get("last_tree")]
+            if self.auto_load_startup.get():
+                last_trees = cache.get("last_trees", [])
+                mode = cache.get("display_mode", "single")
                 
-            valid_trees = [t for t in last_trees if os.path.exists(t)]
-            
-            if mode == "multi" and valid_trees:
-                self._load_multiple_specific_trees(valid_trees)
-            elif valid_trees:
-                self._load_specific_tree(valid_trees[0])
+                # backwards compatibility with old cache
+                if not last_trees and cache.get("last_tree"):
+                    last_trees = [cache.get("last_tree")]
+                    
+                valid_trees = [t for t in last_trees if os.path.exists(t)]
+                
+                if mode == "multi" and valid_trees:
+                    self._load_multiple_specific_trees(valid_trees)
+                elif valid_trees:
+                    self._load_specific_tree(valid_trees[0])
         except Exception:
             pass
 
+    def toggle_auto_load(self):
+        self.save_cache({"auto_load_startup": self.auto_load_startup.get()})
 
     def update_last_trees_cache(self):
         if getattr(self, "display_mode", "single") == "single":
@@ -2181,6 +2189,29 @@ class SampleTreeGUI:
 
     def _save_archive_and_close(self):
         self.save_tree()
+        
+        # Monthly rolling backup of database_structure.json
+        try:
+            import shutil
+            archive_dir = os.path.join(os.path.dirname(self.current_file) if self.current_file else TREE_STORAGE_DIR, "archive")
+            os.makedirs(archive_dir, exist_ok=True)
+            ts_month = datetime.now().strftime("%m%Y")
+            struct_archive_name = f"database_structure_{ts_month}.json"
+            
+            if os.path.exists(DATABASE_STRUCTURE_FILE):
+                # 1. Primary archive location
+                struct_archive_path = os.path.join(archive_dir, struct_archive_name)
+                shutil.copy2(DATABASE_STRUCTURE_FILE, struct_archive_path)
+                
+                # 2. Secondary backup location (if specified)
+                cache = self.load_cache()
+                sec_path = cache.get("secondary_backup_path")
+                if sec_path and os.path.isdir(sec_path):
+                    sec_archive_path = os.path.join(sec_path, struct_archive_name)
+                    shutil.copy2(DATABASE_STRUCTURE_FILE, sec_archive_path)
+        except Exception:
+            pass
+            
         if self.display_mode == "multi":
             if not self.multi_trees:
                 messagebox.showwarning("Save", "No trees to save.")

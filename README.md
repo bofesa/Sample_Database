@@ -65,7 +65,16 @@ python database_explorer.py
 
 This launches the GUI (`launch_gui()` in `database_GUI.py`).
 
-## Build the Windows EXE
+## Build the Windows EXE using build.bat file
+
+To compile the application into a standalone Windows executable, simply double-click the `build.bat` file in the project root.
+
+- A terminal will prompt you for a custom output directory.
+- If you provide a path (e.g., `C:\MyApps\DatabaseExplorer`), the executable and data files will be built there.
+- If you press Enter, it defaults to a `dist/database_explorer` folder.
+- The script automatically copies necessary files (`db.ico`, `help.json`, `database_structure.json`) alongside the executable, skipping any that already exist to protect your data.
+
+## Build the exe manually
 
 From the project root:
 
@@ -115,7 +124,7 @@ Place and run it from a working folder that contains (or can create) these along
    - click **Create Node**
 6. Save progress:
    - click **File -> Save Tree** for normal save
-   - click **File -> Save, Archive and Close** to cleanly save, version it locally, and also copy it to your configured secondary backup folder.
+   - click **File -> Save, Archive and Close** to version it locally and copy it to your secondary backup folder. This also creates a monthly rolling backup of your `database_structure.json` schema!
 7. Load existing data:
    - **File -> Load Tree** for one JSON file
    - **File -> Load Multiple Trees** to browse and open several JSON files in `databases/`
@@ -123,6 +132,7 @@ Place and run it from a working folder that contains (or can create) these along
    - use **Tools -> Search** to find properties across loaded tree(s)
    - use **Edit Node** on selected items in the bottom action bar
 9. Help & Settings:
+   - **Settings -> Auto-Load Databases on Startup**: Toggles whether the app opens your last active workspace automatically.
    - **Settings -> Backup Settings**: Setup a secondary folder path to maintain remote/cloud backups.
    - **Help -> Help Documentation**: Provides a quick overview of how the program works via `help.json`.
 
