@@ -458,6 +458,11 @@ class SampleTreeGUI:
         self.properties_panel_tree = None
         self.unsaved_changes = set()
         
+        # Threading state variables
+        self._loading_thread = None
+        self._thread_result = None
+        self._thread_error = None
+        
         # Menu Bar
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
@@ -650,41 +655,95 @@ class SampleTreeGUI:
             paths = [info["file"] for info in self.multi_trees.values()]
             self.save_cache({"last_trees": paths, "display_mode": "multi"})
 
+    def _thread_load_worker(self, mode, filenames):
+        try:
+            if mode == "single":
+                self._thread_result = deserialize_tree(filenames[0])
+            else:
+                loaded = {}
+                failed = []
+                for idx, path in enumerate(filenames):
+                    try:
+                        tree = deserialize_tree(path)
+                        system_node = tree.get_node(tree.root)
+                        system_name = system_node.data.get("Sample_System", "") if system_node else ""
+                        sort_mode = system_node.data.get("sort_mode", "none") if system_node else "none"
+                        key = f"{idx:04d}_{os.path.basename(path)}"
+                        loaded[key] = {
+                            "tree": tree,
+                            "file": path,
+                            "label": f"{system_name}" if system_name else os.path.basename(path),
+                            "sort_mode": sort_mode
+                        }
+                    except Exception as e:
+                        failed.append(f"{os.path.basename(path)}: {e}")
+                self._thread_result = {"loaded": loaded, "failed": failed}
+        except Exception as e:
+            self._thread_error = e
+
+    def _poll_loading_status(self, dot_count, mode, filenames):
+        if self._loading_thread and self._loading_thread.is_alive():
+            dots = "." * (dot_count + 1)
+            msg = f"Loading {os.path.basename(filenames[0])}{dots}" if mode == "single" else f"Loading multiple trees{dots}"
+            self.refresh_status(msg)
+            self.root.after(250, self._poll_loading_status, (dot_count + 1) % 4, mode, filenames)
+        else:
+            if self._thread_error:
+                messagebox.showerror("Error", f"Failed to load: {self._thread_error}")
+                self.refresh_status("Ready")
+            else:
+                try:
+                    if mode == "single":
+                        self.display_mode = "single"
+                        self._reset_multi_state()
+                        self.tree_obj = self._thread_result
+                        root_node = self.tree_obj.get_node(self.tree_obj.root)
+                        if root_node:
+                            self.sort_mode = root_node.data.get("sort_mode", "none")
+                            self.sort_var.set(self.sort_mode)
+                        self.current_file = filenames[0]
+                        self.populate_treeview()
+                        self._hide_discover_button()
+                        self.refresh_status(f"Loaded {os.path.basename(filenames[0])}")
+                        self.update_last_trees_cache()
+                    else:
+                        loaded = self._thread_result["loaded"]
+                        failed = self._thread_result["failed"]
+                        if not loaded:
+                            self.refresh_status("Ready")
+                            if failed: messagebox.showwarning("Load Errors", "\n".join(failed))
+                            return
+                        self.display_mode = "multi"
+                        self.tree_obj = None
+                        self.current_file = None
+                        self.multi_trees = {k: {key: val for key, val in v.items() if key != "sort_mode"} for k, v in loaded.items()}
+                        self.sort_state = {k: v["sort_mode"] for k, v in loaded.items()}
+                        self.sort_var.set("none")
+                        self.populate_multi_treeview()
+                        self.parent_label_var.set("-")
+                        self.class_cb['values'] = []
+                        self.class_var.set("")
+                        self._hide_discover_button()
+                        if hasattr(self, 'unsaved_changes'):
+                            self.unsaved_changes.clear()
+                        self.update_last_trees_cache()
+                        self.refresh_status(f"Loaded {len(loaded)} trees.")
+                        if failed:
+                            messagebox.showwarning("Load Errors", "\n".join(failed))
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to finalize load: {e}")
+                    self.refresh_status("Ready")
+
     def _load_multiple_specific_trees(self, filenames):
-        loaded = {}
-        failed = []
-        for idx, path in enumerate(filenames):
-            try:
-                tree = deserialize_tree(path)
-                system_node = tree.get_node(tree.root)
-                system_name = system_node.data.get("Sample_System", "") if system_node else ""
-                sort_mode = system_node.data.get("sort_mode", "none") if system_node else "none"
-                key = f"{idx:04d}_{os.path.basename(path)}"
-                loaded[key] = {
-                    "tree": tree,
-                    "file": path,
-                    "label": f"{system_name}" if system_name else os.path.basename(path),
-                }
-                self.sort_state[key] = sort_mode
-            except Exception as e:
-                failed.append(f"{os.path.basename(path)}: {e}")
-
-        if not loaded:
+        if self._loading_thread and self._loading_thread.is_alive():
+            messagebox.showinfo("Wait", "A database is currently loading.")
             return
-
-        self.display_mode = "multi"
-        self.tree_obj = None
-        self.current_file = None
-        self.multi_trees = loaded
-        self.sort_var.set("none")
-        self.populate_multi_treeview()
-        self.parent_label_var.set("-")
-        self.class_cb['values'] = []
-        self.class_var.set("")
-        self._hide_discover_button()
-        if hasattr(self, 'unsaved_changes'):
-            self.unsaved_changes.clear()
-        self.refresh_status(f"Loaded {len(loaded)} trees.")
+            
+        self._thread_result = None
+        self._thread_error = None
+        self._loading_thread = threading.Thread(target=self._thread_load_worker, args=("multi", filenames), daemon=True)
+        self._loading_thread.start()
+        self._poll_loading_status(0, "multi", filenames)
 
     def get_cache_file(self):
         return os.path.join(BASE_DIR, ".db_cache.json")
@@ -1375,23 +1434,15 @@ class SampleTreeGUI:
         self._load_specific_tree(filename)
 
     def _load_specific_tree(self, filename):
-        try:
-            self.display_mode = "single"
-            self._reset_multi_state()
-            self.tree_obj = deserialize_tree(filename)
-            # Restore sort mode from tree
-            root_node = self.tree_obj.get_node(self.tree_obj.root)
-            if root_node:
-                self.sort_mode = root_node.data.get("sort_mode", "none")
-                self.sort_var.set(self.sort_mode)
-            self.current_file = filename
-            self.populate_treeview()
-            # hide discover button once a tree is loaded
-            self._hide_discover_button()
-            self.refresh_status(f"Loaded {os.path.basename(filename)}")
-            self.update_last_trees_cache()
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load: {e}")
+        if self._loading_thread and self._loading_thread.is_alive():
+            messagebox.showinfo("Wait", "A database is currently loading.")
+            return
+            
+        self._thread_result = None
+        self._thread_error = None
+        self._loading_thread = threading.Thread(target=self._thread_load_worker, args=("single", [filename]), daemon=True)
+        self._loading_thread.start()
+        self._poll_loading_status(0, "single", [filename])
 
     def load_all_trees(self):
         files = []
