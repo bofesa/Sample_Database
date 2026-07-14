@@ -445,10 +445,7 @@ class SampleTreeGUI:
         self.root = root
         self.root.title(f"Sample Tree Manager - {TREE_STORAGE_DIR}")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.tree_obj = None
-        self.current_file = None
         self.discover_btn = None
-        self.display_mode = "single"
         self.multi_trees = {}
         self.treeview_index = {}
         self.treeview_system_iids = {}
@@ -475,7 +472,7 @@ class SampleTreeGUI:
         file_menu.add_separator()
         file_menu.add_command(label="Save Tree", command=self.save_tree)
         file_menu.add_command(label="Save, Archive and Close", command=self._save_archive_and_close)
-        file_menu.add_command(label="Close Selected Tree", command=self.close_selected_tree)
+        file_menu.add_command(label="Close Selected Trees", command=self.close_selected_trees)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.on_closing)
         menubar.add_cascade(label="File", menu=file_menu)
@@ -562,7 +559,6 @@ class SampleTreeGUI:
         paned_main.add(self.properties_panel, weight=2)
 
         self.treeview.bind("<<TreeviewSelect>>", self.on_select)
-        self.treeview.bind("<<TreeviewOpen>>", self.on_treeview_open)
 
         # 1. Quick Access Top Bar
         top_bar = ttk.Frame(main)
@@ -627,7 +623,6 @@ class SampleTreeGUI:
             
             if self.auto_load_startup.get():
                 last_trees = cache.get("last_trees", [])
-                mode = cache.get("display_mode", "single")
                 
                 # backwards compatibility with old cache
                 if not last_trees and cache.get("last_tree"):
@@ -635,10 +630,8 @@ class SampleTreeGUI:
                     
                 valid_trees = [t for t in last_trees if os.path.exists(t)]
                 
-                if mode == "multi" and valid_trees:
+                if valid_trees:
                     self._load_multiple_specific_trees(valid_trees)
-                elif valid_trees:
-                    self._load_specific_tree(valid_trees[0])
         except Exception:
             pass
 
@@ -646,90 +639,78 @@ class SampleTreeGUI:
         self.save_cache({"auto_load_startup": self.auto_load_startup.get()})
 
     def update_last_trees_cache(self):
-        if getattr(self, "display_mode", "single") == "single":
-            if getattr(self, "current_file", None):
-                self.save_cache({"last_trees": [self.current_file], "display_mode": "single"})
-            else:
-                self.save_cache({"last_trees": [], "display_mode": "single"})
-        else:
-            paths = [info["file"] for info in self.multi_trees.values()]
-            self.save_cache({"last_trees": paths, "display_mode": "multi"})
+        paths = [info["file"] for info in self.multi_trees.values()]
+        self.save_cache({"last_trees": paths})
 
-    def _thread_load_worker(self, mode, filenames):
+    def _thread_load_worker(self, filenames):
         try:
-            if mode == "single":
-                self._thread_result = deserialize_tree(filenames[0])
-            else:
-                loaded = {}
-                failed = []
-                for idx, path in enumerate(filenames):
-                    try:
-                        tree = deserialize_tree(path)
-                        system_node = tree.get_node(tree.root)
-                        system_name = system_node.data.get("Sample_System", "") if system_node else ""
-                        sort_mode = system_node.data.get("sort_mode", "none") if system_node else "none"
-                        key = f"{idx:04d}_{os.path.basename(path)}"
-                        loaded[key] = {
-                            "tree": tree,
-                            "file": path,
-                            "label": f"{system_name}" if system_name else os.path.basename(path),
-                            "sort_mode": sort_mode
-                        }
-                    except Exception as e:
-                        failed.append(f"{os.path.basename(path)}: {e}")
-                self._thread_result = {"loaded": loaded, "failed": failed}
+            loaded = {}
+            failed = []
+            for idx, path in enumerate(filenames):
+                try:
+                    tree = deserialize_tree(path)
+                    system_node = tree.get_node(tree.root)
+                    system_name = system_node.data.get("Sample_System", "") if system_node else ""
+                    sort_mode = system_node.data.get("sort_mode", "none") if system_node else "none"
+                    key = f"{idx:04d}_{os.path.basename(path)}"
+                    loaded[key] = {
+                        "tree": tree,
+                        "file": path,
+                        "label": f"{system_name}" if system_name else os.path.basename(path),
+                        "sort_mode": sort_mode
+                    }
+                except Exception as e:
+                    failed.append(f"{os.path.basename(path)}: {e}")
+            self._thread_result = {"loaded": loaded, "failed": failed}
         except Exception as e:
             self._thread_error = e
 
-    def _poll_loading_status(self, dot_count, mode, filenames):
+    def _poll_loading_status(self, dot_count, filenames):
         if self._loading_thread and self._loading_thread.is_alive():
             dots = "." * (dot_count + 1)
-            msg = f"Loading {os.path.basename(filenames[0])}{dots}" if mode == "single" else f"Loading multiple trees{dots}"
+            msg = f"Loading trees{dots}"
             self.refresh_status(msg)
-            self.root.after(250, self._poll_loading_status, (dot_count + 1) % 4, mode, filenames)
+            self.root.after(250, self._poll_loading_status, (dot_count + 1) % 4, filenames)
         else:
             if self._thread_error:
                 messagebox.showerror("Error", f"Failed to load: {self._thread_error}")
                 self.refresh_status("Ready")
             else:
                 try:
-                    if mode == "single":
-                        self.display_mode = "single"
-                        self._reset_multi_state()
-                        self.tree_obj = self._thread_result
-                        root_node = self.tree_obj.get_node(self.tree_obj.root)
-                        if root_node:
-                            self.sort_mode = root_node.data.get("sort_mode", "none")
-                            self.sort_var.set(self.sort_mode)
-                        self.current_file = filenames[0]
-                        self.populate_treeview()
-                        self._hide_discover_button()
-                        self.refresh_status(f"Loaded {os.path.basename(filenames[0])}")
-                        self.update_last_trees_cache()
-                    else:
-                        loaded = self._thread_result["loaded"]
-                        failed = self._thread_result["failed"]
-                        if not loaded:
-                            self.refresh_status("Ready")
-                            if failed: messagebox.showwarning("Load Errors", "\n".join(failed))
-                            return
-                        self.display_mode = "multi"
-                        self.tree_obj = None
-                        self.current_file = None
-                        self.multi_trees = {k: {key: val for key, val in v.items() if key != "sort_mode"} for k, v in loaded.items()}
-                        self.sort_state = {k: v["sort_mode"] for k, v in loaded.items()}
-                        self.sort_var.set("none")
-                        self.populate_multi_treeview()
-                        self.parent_label_var.set("-")
-                        self.class_cb['values'] = []
-                        self.class_var.set("")
-                        self._hide_discover_button()
-                        if hasattr(self, 'unsaved_changes'):
-                            self.unsaved_changes.clear()
-                        self.update_last_trees_cache()
-                        self.refresh_status(f"Loaded {len(loaded)} trees.")
-                        if failed:
-                            messagebox.showwarning("Load Errors", "\n".join(failed))
+                    loaded = self._thread_result["loaded"]
+                    failed = self._thread_result["failed"]
+                    if not loaded and not failed:
+                        self.refresh_status("Ready")
+                        return
+
+                    start_idx = len(self.multi_trees)
+                    appended_count = 0
+                    for i, (k, v) in enumerate(loaded.items()):
+                        existing = any(info["file"] == v["file"] for info in self.multi_trees.values())
+                        if not existing:
+                            new_key = f"{start_idx + i:04d}_{os.path.basename(v['file'])}"
+                            self.multi_trees[new_key] = {key: val for key, val in v.items() if key != "sort_mode"}
+                            self.sort_state[new_key] = v["sort_mode"]
+                            appended_count += 1
+                    
+                    self.sort_var.set("none")
+                    self.populate_treeview()
+                    self.parent_label_var.set("-")
+                    self.class_cb['values'] = []
+                    self.class_var.set("")
+                    self._hide_discover_button()
+                    if hasattr(self, 'unsaved_changes'):
+                        self.unsaved_changes.clear()
+                    self.update_last_trees_cache()
+                    
+                    total_open = len(self.multi_trees)
+                    msg = f"Loaded {appended_count} trees. Workspace has {total_open} total."
+                    if appended_count < len(loaded):
+                        msg += f" ({len(loaded) - appended_count} already open)"
+                    self.refresh_status(msg)
+                    
+                    if failed:
+                        messagebox.showwarning("Load Errors", "\n".join(failed))
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to finalize load: {e}")
                     self.refresh_status("Ready")
@@ -741,9 +722,9 @@ class SampleTreeGUI:
             
         self._thread_result = None
         self._thread_error = None
-        self._loading_thread = threading.Thread(target=self._thread_load_worker, args=("multi", filenames), daemon=True)
+        self._loading_thread = threading.Thread(target=self._thread_load_worker, args=([filenames]), daemon=True)
         self._loading_thread.start()
-        self._poll_loading_status(0, "multi", filenames)
+        self._poll_loading_status(0, filenames)
 
     def get_cache_file(self):
         return os.path.join(BASE_DIR, ".db_cache.json")
@@ -887,18 +868,14 @@ class SampleTreeGUI:
     def on_sort_changed(self):
         """Called when sort mode changes"""
         states = self._get_open_states()
-        if self.display_mode == "single":
-            self.sort_mode = self.sort_var.get()
-            self.populate_treeview(restore_states=states)
-        elif self.display_mode == "multi":
-            for system_key in self.multi_trees.keys():
-                self.sort_state[system_key] = self.sort_var.get()
-            self.populate_multi_treeview(restore_states=states)
+        for system_key in self.multi_trees.keys():
+            self.sort_state[system_key] = self.sort_var.get()
+            self.unsaved_changes.add(system_key)
+        self.populate_treeview(restore_states=states)
 
-    def get_sort_children(self, tree, parent_id):
-        """Get children of a node sorted according to current sort_mode"""
+    def get_sort_children(self, tree, parent_id, sort_mode="none"):
+        """Get children of a node sorted according to the given sort_mode"""
         children = tree.children(parent_id)
-        sort_mode = self.sort_mode if self.display_mode == "single" else self.sort_var.get()
         
         if sort_mode == "none":
             return children
@@ -1036,13 +1013,12 @@ class SampleTreeGUI:
         
         # Create dialog to select destination parent (tree view showing all nodes, greyed-out invalid parents)
         class DestinationDialog(tk.Toplevel):
-            def __init__(self, master, child_cls, single_tree=None, multi_trees=None):
+            def __init__(self, master, child_cls, multi_trees=None):
                 super().__init__(master)
                 self.title("Select Destination Parent")
                 self.geometry("450x500")
                 self.result = None
                 self.child_cls = child_cls
-                self.single_tree = single_tree
                 self.multi_trees = multi_trees or {}
                 self.node_data = {}
                 self.valid_nodes = set()
@@ -1065,11 +1041,8 @@ class SampleTreeGUI:
                 self.treeview.tag_configure("valid", foreground="black")
                 self.treeview.tag_configure("invalid", foreground="gray60")
                 
-                # Populate tree based on mode
-                if single_tree:
-                    self._populate_tree_single(single_tree)
-                else:
-                    self._populate_tree_multi()
+                # Populate tree
+                self._populate_tree()
                 
                 # Bind selection event
                 self.treeview.bind("<<TreeviewSelect>>", self._on_select)
@@ -1093,32 +1066,8 @@ class SampleTreeGUI:
                 except Exception:
                     return False
             
-            def _populate_tree_single(self, tree):
-                """Populate tree for single-tree mode, showing all nodes with valid parents highlighted"""
-                def add_node(node_id, parent_iid=""):
-                    node = tree.get_node(node_id)
-                    if not node:
-                        return
-                    
-                    is_valid = self._can_parent(node, tree)
-                    text = self._node_display_text(node)
-                    iid = node.identifier
-                    tags = ("valid",) if is_valid else ("invalid",)
-                    
-                    self.treeview.insert(parent_iid, "end", iid=iid, text=text, tags=tags)
-                    self.node_data[iid] = (tree, node_id)
-                    
-                    if is_valid:
-                        self.valid_nodes.add(iid)
-                    
-                    # Add children regardless of parent validity
-                    for child in tree.children(node_id):
-                        add_node(child.identifier, iid)
-                
-                add_node(tree.root)
-            
-            def _populate_tree_multi(self):
-                """Populate tree for multi-tree mode, showing all nodes with valid parents highlighted"""
+            def _populate_tree(self):
+                """Populate tree showing all nodes across all open trees with valid parents highlighted"""
                 for system_key in sorted(self.multi_trees.keys()):
                     info = self.multi_trees[system_key]
                     tree = info["tree"]
@@ -1195,22 +1144,15 @@ class SampleTreeGUI:
                 self.destroy()
         
         # Create and show dialog
-        if self.display_mode == "single":
-            dest_dialog = DestinationDialog(self.root, cls, single_tree=self.tree_obj)
-        else:
-            dest_dialog = DestinationDialog(self.root, cls, multi_trees=self.multi_trees)
+        dest_dialog = DestinationDialog(self.root, cls, multi_trees=self.multi_trees)
         self.root.wait_window(dest_dialog)
         
         if not dest_dialog.result:
             return
         
         dest_info = dest_dialog.result
-        if len(dest_info) == 3:
-            dest_tree, dest_parent_id, dest_system_key = dest_info
-            dest_ctx_system_key = dest_system_key
-        else:
-            dest_tree, dest_parent_id = dest_info
-            dest_ctx_system_key = ctx["system_key"]
+        dest_tree, dest_parent_id, dest_system_key = dest_info
+        dest_ctx_system_key = dest_system_key
         
         # Create new node with same class and properties
         new_props = editor.result
@@ -1229,16 +1171,7 @@ class SampleTreeGUI:
         
         self._refresh_after_tree_change(system_key=dest_ctx_system_key, focus_node_id=new_obj.id)
         self.unsaved_changes.add(dest_ctx_system_key)
-        if self.display_mode == "multi":
-            self.refresh_status(f"Copied {class_name} node.")
-        else:
-            self.refresh_status(f"Copied {class_name} node.")
-
-    def _reset_multi_state(self):
-        self.multi_trees = {}
-        self.treeview_index = {}
-        self.treeview_system_iids = {}
-
+        self.refresh_status(f"Copied {class_name} node.")
 
     def on_closing(self):
         if not getattr(self, "unsaved_changes", set()):
@@ -1246,18 +1179,17 @@ class SampleTreeGUI:
             return
         answer = messagebox.askyesnocancel("Quit", "You have unsaved changes. 'Yes' to save and archive them, or 'No' to discard.")
         if answer is True:  # Yes
-            self._save_archive_and_close()
+            self._save_archive_and_close(all_unsaved=True)
             self.root.destroy()
         elif answer is False:  # No
             self.root.destroy()
         else:  # Cancel
             pass
 
-    def _clear_loaded_trees(self):
-        self.tree_obj = None
-        self.current_file = None
-        self.display_mode = "single"
-        self._reset_multi_state()
+    def _clear_workspace(self):
+        self.multi_trees = {}
+        self.treeview_index = {}
+        self.treeview_system_iids = {}
         self.treeview.delete(*self.treeview.get_children())
         self.parent_label_var.set("-")
         self.class_cb['values'] = []
@@ -1272,22 +1204,6 @@ class SampleTreeGUI:
         if not sel:
             return None
         tv_iid = sel[0]
-
-        if self.display_mode == "single":
-            if not self.tree_obj:
-                return None
-            node = self.tree_obj.get_node(tv_iid)
-            if node is None:
-                return None
-            return {
-                "tree": self.tree_obj,
-                "node": node,
-                "node_id": node.identifier,
-                "system_key": "single",
-                "file": self.current_file,
-                "is_system_root": node.identifier == self.tree_obj.root,
-                "tv_iid": tv_iid,
-            }
 
         payload = self.treeview_index.get(tv_iid)
         if not payload:
@@ -1311,7 +1227,7 @@ class SampleTreeGUI:
             "tv_iid": tv_iid,
         }
 
-    def _multi_tree_iid(self, system_key, node_id):
+    def _get_treeview_iid(self, system_key, node_id):
         root_iid = self.treeview_system_iids.get(system_key)
         if not root_iid:
             return None
@@ -1337,32 +1253,7 @@ class SampleTreeGUI:
 
     def _refresh_after_tree_change(self, system_key=None, focus_node_id=None):
         states = self._get_open_states()
-        if self.display_mode == "multi":
-            self.populate_multi_treeview(expand_system_key=system_key, focus_node_id=focus_node_id, restore_states=states)
-        else:
-            self.populate_treeview(restore_states=states)
-            if focus_node_id and self.tree_obj:
-                path = []
-                cur = focus_node_id
-                while True:
-                    node = self.tree_obj.get_node(cur)
-                    if node is None:
-                        break
-                    path.append(cur)
-                    parent = self.tree_obj.parent(cur)
-                    if parent is None:
-                        break
-                    cur = parent.identifier
-                for nid in reversed(path):
-                    try:
-                        self.treeview.item(nid, open=True)
-                    except Exception:
-                        pass
-                try:
-                    self.treeview.selection_set(focus_node_id)
-                    self.treeview.see(focus_node_id)
-                except Exception:
-                    pass
+        self.populate_treeview(expand_system_key=system_key, focus_node_id=focus_node_id, restore_states=states)
 
     def _hide_discover_button(self):
         if self.discover_btn:
@@ -1394,35 +1285,31 @@ class SampleTreeGUI:
             
         import treelib
         import json
-        self.display_mode = "single"
-        self._reset_multi_state()
-        self.tree_obj = treelib.Tree()
+        
+        tree = treelib.Tree()
         root_id = "SYSTEM"
-        self.sort_mode = "none"
-        self.tree_obj.create_node(
+        tree.create_node(
             tag="SYSTEM", 
             identifier=root_id, 
             data={"Sample_System": sample_system, "sort_mode": "none"}
         )
-        
-        # Serialize and save immediately
-        def serialize(t):
-            nodes = []
-            for node in t.all_nodes():
-                if node.identifier == t.root:
-                    continue
-                nodes.append(node.data.get("obj").to_dict()) # obj doesn't exist for root
-            return {"root": {"id": t.root, "sample_system": t.get_node(t.root).data.get("Sample_System")}, "nodes": nodes}
             
         with open(filename, "w", encoding="utf-8") as f:
             json.dump({"root": {"id": "SYSTEM", "sample_system": sample_system}, "nodes": []}, f, indent=2)
             
-        self.current_file = filename
+        key = f"{len(self.multi_trees):04d}_{os.path.basename(filename)}"
+        self.multi_trees[key] = {
+            "tree": tree,
+            "file": filename,
+            "label": sample_system if sample_system else os.path.basename(filename)
+        }
+        self.sort_state[key] = "none"
+        
         self.sort_var.set("none")
         self._hide_discover_button()
         self.refresh_status(f"Created new tree: {os.path.basename(filename)}")
         self.update_last_trees_cache()
-        self._refresh_after_tree_change(focus_node_id=root_id)
+        self.populate_treeview()
 
     def load_tree(self):
         filename = filedialog.askopenfilename(
@@ -1431,18 +1318,7 @@ class SampleTreeGUI:
             title="Load Tree")
         if not filename:
             return
-        self._load_specific_tree(filename)
-
-    def _load_specific_tree(self, filename):
-        if self._loading_thread and self._loading_thread.is_alive():
-            messagebox.showinfo("Wait", "A database is currently loading.")
-            return
-            
-        self._thread_result = None
-        self._thread_error = None
-        self._loading_thread = threading.Thread(target=self._thread_load_worker, args=("single", [filename]), daemon=True)
-        self._loading_thread.start()
-        self._poll_loading_status(0, "single", [filename])
+        self._load_multiple_specific_trees([filename])
 
     def load_all_trees(self):
         files = []
@@ -1462,49 +1338,7 @@ class SampleTreeGUI:
             messagebox.showwarning("No Trees", "No JSON tree files found in databases folder.")
             return
 
-        loaded = {}
-        failed = []
-        for idx, path in enumerate(files):
-            try:
-                tree = deserialize_tree(path)
-                system_node = tree.get_node(tree.root)
-                system_name = ""
-                sort_mode = "none"
-                if system_node is not None:
-                    system_name = system_node.data.get("Sample_System", "")
-                    sort_mode = system_node.data.get("sort_mode", "none")
-                key = f"{idx:04d}_{os.path.basename(path)}"
-                loaded[key] = {
-                    "tree": tree,
-                    "file": path,
-                    "label": f"{system_name}" if system_name else os.path.basename(path),
-                }
-                self.sort_state[key] = sort_mode
-            except Exception as e:
-                failed.append(f"{os.path.basename(path)}: {e}")
-
-        if not loaded:
-            messagebox.showerror("Error", "No trees could be loaded.")
-            return
-
-        self.display_mode = "multi"
-        self.tree_obj = None
-        self.current_file = None
-        self.multi_trees = loaded
-        # Set sort_var to "none" for multi-tree display
-        self.sort_var.set("none")
-        self.populate_multi_treeview()
-        self.parent_label_var.set("-")
-        self.class_cb['values'] = []
-        self.class_var.set("")
-        self._hide_discover_button()
-        self.update_last_trees_cache()
-
-        if failed:
-            self.refresh_status(f"Loaded {len(loaded)} trees ({len(failed)} failed).")
-        else:
-            self.refresh_status(f"Loaded {len(loaded)} trees.")
-
+        self._load_multiple_specific_trees(files)
 
     def load_multiple_trees(self):
         filenames = filedialog.askopenfilenames(
@@ -1513,142 +1347,77 @@ class SampleTreeGUI:
             title="Load Multiple Trees")
         if not filenames:
             return
+        self._load_multiple_specific_trees(filenames)
 
-        loaded = {}
-        failed = []
-        for idx, path in enumerate(filenames):
-            try:
-                tree = deserialize_tree(path)
-                system_node = tree.get_node(tree.root)
-                system_name = ""
-                sort_mode = "none"
-                if system_node is not None:
-                    system_name = system_node.data.get("Sample_System", "")
-                    sort_mode = system_node.data.get("sort_mode", "none")
-                key = f"{idx:04d}_{os.path.basename(path)}"
-                loaded[key] = {
-                    "tree": tree,
-                    "file": path,
-                    "label": f"{system_name}" if system_name else os.path.basename(path),
-                }
-                self.sort_state[key] = sort_mode
-            except Exception as e:
-                failed.append(f"{os.path.basename(path)}: {e}")
-
-        if not loaded:
-            messagebox.showerror("Error", "No trees could be loaded.")
-            return
-
-        self.display_mode = "multi"
-        self.tree_obj = None
-        self.current_file = None
-        self.multi_trees = loaded
-        self.sort_var.set("none")
-        self.populate_multi_treeview()
-        self.parent_label_var.set("-")
-        self.class_cb['values'] = []
-        self.class_var.set("")
-        self._hide_discover_button()
-        self.update_last_trees_cache()
-
-        if failed:
-            self.refresh_status(f"Loaded {len(loaded)} trees ({len(failed)} failed).")
-        else:
-            self.refresh_status(f"Loaded {len(loaded)} trees.")
-
-    def close_selected_tree(self):
+    def _get_selected_systems(self):
         selected = self.treeview.selection()
         if not selected:
-            messagebox.showwarning("Close Tree", "No node selected. Please select a node from the tree you want to close.")
-            return
-
-        if self.display_mode == "multi":
-            iid = selected[0]
+            return set()
+            
+        systems = set()
+        for iid in selected:
+            curr_iid = iid
             while True:
-                parent = self.treeview.parent(iid)
+                parent = self.treeview.parent(curr_iid)
                 if not parent:
                     break
-                iid = parent
+                curr_iid = parent
             
             system_key = None
             for key, top_iid in self.treeview_system_iids.items():
-                if top_iid == iid:
+                if top_iid == curr_iid:
                     system_key = key
                     break
             
             if not system_key:
-                system_key = self.treeview_index.get(selected[0], {}).get("system_key")
+                system_key = self.treeview_index.get(iid, {}).get("system_key")
             
-            if not system_key or system_key not in self.multi_trees:
-                messagebox.showwarning("Close Tree", "Could not identify the tree to close.")
-                return
-            
+            if system_key and system_key in self.multi_trees:
+                systems.add(system_key)
+        return systems
+
+    def close_selected_trees(self):
+        systems_to_close = self._get_selected_systems()
+        if not systems_to_close:
+            messagebox.showwarning("Close Trees", "No node selected. Please select nodes from the trees you want to close.")
+            return
+
+        for system_key in systems_to_close:
             info = self.multi_trees[system_key]
-            ans = messagebox.askyesnocancel("Close Tree", f"Save and archive '{info.get('label', system_key)}' before closing?")
-            if ans is None:
-                return
-            if ans:
-                try:
-                    tree = info["tree"]
-                    filepath = info["file"]
-                    sort_mode = self.sort_state.get(system_key, "none")
-                    serialize_tree(tree, filepath, sort_mode=sort_mode)
-                    
-                    archive_dir = os.path.join(os.path.dirname(filepath) if filepath else TREE_STORAGE_DIR, "archive")
-                    os.makedirs(archive_dir, exist_ok=True)
-                    ts = datetime.now().strftime("%y%m%d")
-                    base = os.path.basename(filepath)
-                    root, ext = os.path.splitext(base)
-                    out_name = f"{root}_{ts}{ext}" if ext else f"{root}_{ts}"
-                    out_path = os.path.join(archive_dir, out_name)
-                    serialize_tree(tree, out_path, sort_mode=sort_mode)
-                    self._archive_to_secondary(tree, out_name, sort_mode)
-                except Exception as e:
-                    messagebox.showerror("Error", f"Failed to save/archive tree: {e}")
-                    return
-
-            del self.multi_trees[system_key]
-            if system_key in self.sort_state:
-                del self.sort_state[system_key]
             
-            self.unsaved_changes.discard(system_key)
-            self.update_last_trees_cache()
-            
-            if not self.multi_trees:
-                self.display_mode = "single"
-                self.treeview.delete(*self.treeview.get_children())
-            else:
-                self.populate_multi_treeview()
-            self.refresh_status("Closed tree.")
-
-        else:
-            if not self.tree_obj:
-                return
-            ans = messagebox.askyesnocancel("Close Tree", "Save and archive the current tree before closing?")
-            if ans is None:
-                return
-            if ans:
-                try:
-                    self.save_tree()
-                    filepath = self.current_file
-                    if filepath:
-                        archive_dir = os.path.join(os.path.dirname(filepath), "archive")
+            # Only prompt if there are actually unsaved changes
+            if system_key in getattr(self, "unsaved_changes", set()):
+                ans = messagebox.askyesnocancel("Close Tree", f"Save and archive '{info.get('label', system_key)}' before closing?")
+                if ans is None:
+                    return # Abort entire closing operation
+                if ans:
+                    try:
+                        tree = info["tree"]
+                        filepath = info["file"]
+                        sort_mode = self.sort_state.get(system_key, "none")
+                        serialize_tree(tree, filepath, sort_mode=sort_mode)
+                        
+                        archive_dir = os.path.join(os.path.dirname(filepath) if filepath else TREE_STORAGE_DIR, "archive")
                         os.makedirs(archive_dir, exist_ok=True)
                         ts = datetime.now().strftime("%y%m%d")
                         base = os.path.basename(filepath)
                         root, ext = os.path.splitext(base)
                         out_name = f"{root}_{ts}{ext}" if ext else f"{root}_{ts}"
                         out_path = os.path.join(archive_dir, out_name)
-                        root_node = self.tree_obj.get_node(self.tree_obj.root)
-                        sort_mode = root_node.data.get("sort_mode", "none") if root_node else "none"
-                        serialize_tree(self.tree_obj, out_path, sort_mode=sort_mode)
-                        self._archive_to_secondary(self.tree_obj, out_name, sort_mode)
-                except Exception as e:
-                    messagebox.showerror("Error", f"Failed to save/archive tree: {e}")
-                    return
+                        serialize_tree(tree, out_path, sort_mode=sort_mode)
+                        self._archive_to_secondary(tree, out_name, sort_mode)
+                    except Exception as e:
+                        messagebox.showerror("Error", f"Failed to save/archive tree: {e}")
+                        return
 
-            self._clear_loaded_trees()
-            self.refresh_status("Closed tree.")
+            del self.multi_trees[system_key]
+            if system_key in self.sort_state:
+                del self.sort_state[system_key]
+            self.unsaved_changes.discard(system_key)
+            
+        self.update_last_trees_cache()
+        self.populate_treeview()
+        self.refresh_status(f"Closed {len(systems_to_close)} tree(s).")
 
     def collapse_all_trees(self):
         def _collapse(item):
@@ -1749,32 +1518,37 @@ class SampleTreeGUI:
         else:
             messagebox.showinfo("Import Complete", "Legacy keys merged successfully into existing structure.")
             
-    def save_tree(self):
-        if self.display_mode == "multi":
-            if not self.multi_trees:
-                messagebox.showwarning("Save", "No trees to save.")
-                return
-            saved = 0
-            for system_key, info in self.multi_trees.items():
+    def save_tree(self, all_unsaved=False):
+        if not self.multi_trees:
+            messagebox.showwarning("Save", "No trees to save.")
+            return set()
+            
+        unsaved = getattr(self, "unsaved_changes", set())
+        
+        if all_unsaved:
+            systems_to_save = unsaved.copy()
+        else:
+            selected_systems = self._get_selected_systems()
+            if not selected_systems:
+                messagebox.showwarning("Save", "No tree selected. Please select a tree to save.")
+                return set()
+            systems_to_save = selected_systems.intersection(unsaved)
+            
+        if not systems_to_save:
+            self.refresh_status("No unsaved changes to save in the selected tree(s).")
+            return set()
+            
+        saved = 0
+        for system_key in list(systems_to_save):
+            if system_key in self.multi_trees:
+                info = self.multi_trees[system_key]
                 sort_mode = self.sort_state.get(system_key, "none")
                 serialize_tree(info["tree"], info["file"], sort_mode=sort_mode)
                 saved += 1
-            self.unsaved_changes.clear()
-            self.refresh_status(f"Saved {saved} trees.")
-            return
-
-        if not self.tree_obj:
-            return
-        if not self.current_file:
-            self.current_file = filedialog.asksaveasfilename(
-                initialdir=TREE_STORAGE_DIR,
-                defaultextension=".json",
-                filetypes=[("JSON Files", "*.json")])
-            if not self.current_file:
-                return
-        serialize_tree(self.tree_obj, self.current_file, sort_mode=self.sort_mode)
-        self.unsaved_changes.clear()
-        self.refresh_status("Tree saved.")
+                self.unsaved_changes.discard(system_key)
+                
+        self.refresh_status(f"Saved {saved} tree(s).")
+        return systems_to_save
     
     # ---------- Discover Required Properties Option (integrated into GUI) ----------
     def _on_discover_click(self):
@@ -1812,140 +1586,21 @@ class SampleTreeGUI:
             "#FF00BF",  # rose
         ]
 
-    def _activate_rainbow_mode(self, colours, restore_states=None):
-        if restore_states is None:
-            restore_states = {}
-        try:
-            self.treeview.delete(*self.treeview.get_children())
-            if not self.tree_obj:
-                return
 
-            def add(node_id, depth=0):
-                node = self.tree_obj.get_node(node_id)
-                if node is None:
-                    return
-                parent = self.tree_obj.parent(node_id)
-                parent_tv = "" if parent is None else parent.identifier
-                text = self.node_text(node)
-                color_tag = f"rainbow_{depth % len(colours)}"
-                try:
-                    self.treeview.tag_configure(color_tag, foreground=colours[depth % len(colours)])
-                except Exception:
-                    pass
-                self.treeview.insert(parent_tv, "end", iid=node.identifier, text=text, tags=(color_tag,))
-                try:
-                    if node.identifier in restore_states:
-                        self.treeview.item(node.identifier, open=restore_states[node.identifier])
-                    else:
-                        self.treeview.item(node.identifier, open=True)
-                except Exception:
-                    pass
-                for child in self.get_sort_children(self.tree_obj, node_id):
-                    add(child.identifier, depth + 1)
-
-            add(self.tree_obj.root)
-            if not restore_states:
-                for iid in self.treeview.get_children():
-                    try:
-                        self.treeview.item(iid, open=True)
-                    except Exception:
-                        pass
-            elif self.tree_obj.root in restore_states:
-                try:
-                    self.treeview.item(self.tree_obj.root, open=restore_states[self.tree_obj.root])
-                except Exception:
-                    pass
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to activate rainbow mode: {e}")
 
     def toggle_rainbow_mode(self):
-        has_single = self.display_mode == "single" and self.tree_obj is not None
-        has_multi = self.display_mode == "multi" and bool(self.multi_trees)
-        if not (has_single or has_multi):
+        if not self.multi_trees:
             messagebox.showinfo("Rainbow Mode", "Load a tree first.")
             return
         states = self._get_open_states()
         if not self.rainbow_active:
             self.rainbow_active = True
-            if self.display_mode == "single":
-                self._activate_rainbow_mode(self.rainbow_colours(), restore_states=states)
-            else:
-                self.populate_multi_treeview(restore_states=states)
+            self.populate_treeview(restore_states=states)
         else:
             self.rainbow_active = False
-            if self.display_mode == "single":
-                self.populate_treeview(restore_states=states)
-            else:
-                self.populate_multi_treeview(restore_states=states)
+            self.populate_treeview(restore_states=states)
 
-    def populate_treeview(self, restore_states=None):
-        if restore_states is None:
-            restore_states = {}
-
-        self.treeview_index = {}
-        self.treeview_system_iids = {}
-
-        if self.display_mode == "multi":
-            self.populate_multi_treeview(restore_states=restore_states)
-            return
-
-        if self.rainbow_active:
-            self._activate_rainbow_mode(self.rainbow_colours(), restore_states=restore_states)
-            return
-
-        self.treeview.delete(*self.treeview.get_children())
-        if not self.tree_obj:
-            return
-
-
-        # configure tag for system children (red text)
-        try:
-            self.treeview.tag_configure("system_child", foreground="red")
-        except Exception:
-            # Some environments may not support tag_configure; ignore safely
-            pass
-
-        # Build hierarchical insertion and expand every node as it's added
-        def add(node_id):
-            node = self.tree_obj.get_node(node_id)
-            parent = self.tree_obj.parent(node_id)
-            parent_tv = "" if parent is None else parent.identifier
-            text = self.node_text(node)
-
-            # mark direct children of the SYSTEM root with the "system_child" tag
-            tags = ()
-            try:
-                if parent is not None and parent.identifier == self.tree_obj.root and node.tag != "SYSTEM":
-                    tags = ("system_child",)
-            except Exception:
-                tags = ()
-
-            self.treeview.insert(parent_tv, "end", iid=node.identifier, text=text, tags=tags)
-            # ensure the inserted node is expanded
-            try:
-                if node.identifier in restore_states:
-                    self.treeview.item(node.identifier, open=restore_states[node.identifier])
-                else:
-                    self.treeview.item(node.identifier, open=True)
-            except Exception:
-                pass
-            for child in self.get_sort_children(self.tree_obj, node_id):
-                add(child.identifier)
-        add(self.tree_obj.root)
-        # make sure top-level items are expanded as well
-        if not restore_states:
-            try:
-                for iid in self.treeview.get_children():
-                    self.treeview.item(iid, open=True)
-            except Exception:
-                pass
-        elif self.tree_obj.root in restore_states:
-            try:
-                self.treeview.item(self.tree_obj.root, open=restore_states[self.tree_obj.root])
-            except Exception:
-                pass
-
-    def populate_multi_treeview(self, expand_system_key=None, focus_node_id=None, restore_states=None):
+    def populate_treeview(self, expand_system_key=None, focus_node_id=None, restore_states=None):
         if restore_states is None:
             restore_states = {}
 
@@ -1957,9 +1612,9 @@ class SampleTreeGUI:
             return
 
 
-        def add_node(system_key, tree, node_id, parent_iid, expand_this_system, depth):
+        def add_node(system_key, tree, node_id, parent_iid, expand_this_system, depth, system_sort_mode):
             node = tree.get_node(node_id)
-            node_iid = self._multi_tree_iid(system_key, node_id)
+            node_iid = self._get_treeview_iid(system_key, node_id)
             if node_iid is None or node is None:
                 return
             tags = ()
@@ -1985,8 +1640,8 @@ class SampleTreeGUI:
                 is_open = bool(expand_this_system)
             self.treeview.item(node_iid, open=is_open)
             self.treeview_index[node_iid] = {"system_key": system_key, "node_id": node_id}
-            for child in self.get_sort_children(tree, node_id):
-                add_node(system_key, tree, child.identifier, node_iid, expand_this_system, depth + 1)
+            for child in self.get_sort_children(tree, node_id, sort_mode=system_sort_mode):
+                add_node(system_key, tree, child.identifier, node_iid, expand_this_system, depth + 1, system_sort_mode)
 
         try:
             self.treeview.tag_configure("system_child", foreground="red")
@@ -1995,6 +1650,7 @@ class SampleTreeGUI:
 
         for system_key in sorted(self.multi_trees.keys()):
             info = self.multi_trees[system_key]
+            system_sort_mode = self.sort_state.get(system_key, self.sort_var.get())
             tree = info["tree"]
             root_node = tree.get_node(tree.root)
             top_iid = f"SYS::{system_key}"
@@ -2020,8 +1676,8 @@ class SampleTreeGUI:
                 is_open = bool(expand_system_key and expand_system_key == system_key)
             self.treeview.item(top_iid, open=is_open)
             self.treeview_index[top_iid] = {"system_key": system_key, "node_id": tree.root}
-            for child in self.get_sort_children(tree, tree.root):
-                add_node(system_key, tree, child.identifier, top_iid, expand_system_key and expand_system_key == system_key, 1)
+            for child in self.get_sort_children(tree, tree.root, sort_mode=system_sort_mode):
+                add_node(system_key, tree, child.identifier, top_iid, expand_system_key and expand_system_key == system_key, 1, system_sort_mode)
 
         if focus_node_id and expand_system_key:
             tree = self.multi_trees.get(expand_system_key, {}).get("tree")
@@ -2038,13 +1694,13 @@ class SampleTreeGUI:
                         break
                     cur = parent.identifier
                 for nid in reversed(path):
-                    iid = self._multi_tree_iid(expand_system_key, nid)
+                    iid = self._get_treeview_iid(expand_system_key, nid)
                     if iid:
                         try:
                             self.treeview.item(iid, open=True)
                         except Exception:
                             pass
-                target_iid = self._multi_tree_iid(expand_system_key, focus_node_id)
+                target_iid = self._get_treeview_iid(expand_system_key, focus_node_id)
                 if target_iid:
                     try:
                         self.treeview.selection_set(target_iid)
@@ -2052,34 +1708,6 @@ class SampleTreeGUI:
                     except Exception:
                         pass
 
-    def _expand_all_descendants(self, iid):
-        for child in self.treeview.get_children(iid):
-            try:
-                self.treeview.item(child, open=True)
-            except Exception:
-                pass
-            self._expand_all_descendants(child)
-
-    def on_treeview_open(self, _event):
-        if self.display_mode != "multi":
-            return
-        sel = self.treeview.selection()
-        opened_iid = sel[0] if sel else self.treeview.focus()
-        if not opened_iid:
-            return
-        payload = self.treeview_index.get(opened_iid)
-        if not payload:
-            return
-        system_key = payload.get("system_key")
-        node_id = payload.get("node_id")
-        info = self.multi_trees.get(system_key)
-        if not info:
-            return
-        tree = info.get("tree")
-        if not tree:
-            return
-        if node_id == tree.root:
-            self._expand_all_descendants(opened_iid)
 
     def node_text(self, node):
         ''' Generate display text for a tree node '''
@@ -2233,18 +1861,17 @@ class SampleTreeGUI:
         # Refresh treeview to reflect any changes
         self._refresh_after_tree_change(system_key=ctx["system_key"], focus_node_id=node_id)
         self.unsaved_changes.add(ctx["system_key"])
-        if self.display_mode == "multi":
-            self.refresh_status(f"Edited {class_name} node in {os.path.basename(ctx['file'])}.")
-        else:
-            self.refresh_status(f"Edited {class_name} node.")
+        self.refresh_status(f"Edited {class_name} node in {os.path.basename(ctx['file'])}.")
 
-    def _save_archive_and_close(self):
-        self.save_tree()
-        
+    def _save_archive_and_close(self, all_unsaved=False):
+        saved_systems = self.save_tree(all_unsaved=all_unsaved)
+        if saved_systems is None:
+            return
+            
         # Monthly rolling backup of database_structure.json
         try:
             import shutil
-            archive_dir = os.path.join(os.path.dirname(self.current_file) if self.current_file else TREE_STORAGE_DIR, "archive")
+            archive_dir = os.path.join(TREE_STORAGE_DIR, "archive")
             os.makedirs(archive_dir, exist_ok=True)
             ts_month = datetime.now().strftime("%m%Y")
             struct_archive_name = f"database_structure_{ts_month}.json"
@@ -2263,15 +1890,16 @@ class SampleTreeGUI:
         except Exception:
             pass
             
-        if self.display_mode == "multi":
-            if not self.multi_trees:
-                messagebox.showwarning("Save", "No trees to save.")
-                return
-            archive_dir = os.path.join(os.path.dirname(self.current_file) if self.current_file else TREE_STORAGE_DIR, "archive")
-            os.makedirs(archive_dir, exist_ok=True)
-            ts = datetime.now().strftime("%y%m%d")
-            try:
-                for system_key, info in self.multi_trees.items():
+        if not self.multi_trees:
+            return
+            
+        archive_dir = os.path.join(TREE_STORAGE_DIR, "archive")
+        os.makedirs(archive_dir, exist_ok=True)
+        ts = datetime.now().strftime("%y%m%d")
+        try:
+            for system_key in saved_systems:
+                if system_key in self.multi_trees:
+                    info = self.multi_trees[system_key]
                     sort_mode = self.sort_state.get(system_key, "none")
                     base = os.path.basename(info["file"])
                     root, ext = os.path.splitext(base)
@@ -2279,43 +1907,21 @@ class SampleTreeGUI:
                     out_path = os.path.join(archive_dir, out_name)
                     serialize_tree(info["tree"], out_path, sort_mode=sort_mode)
                     self._archive_to_secondary(info["tree"], out_name, sort_mode)
-                self._clear_loaded_trees()
-                self.refresh_status("Ready")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to archive trees: {e}")
-            return
-
-        if not self.tree_obj:
-            messagebox.showwarning("Save", "No tree to save.")
-            return
-        base_file = self.current_file
-        if not base_file:
-            base_file = filedialog.asksaveasfilename(
-                initialdir=TREE_STORAGE_DIR,
-                defaultextension=".json",
-                filetypes=[("JSON Files", "*.json")],
-                title="Save Tree As")
-        if not base_file:
-            return
-        # Ensure archive subdirectory exists
-        archive_dir = os.path.join(os.path.dirname(self.current_file) if self.current_file else TREE_STORAGE_DIR, "archive")
-        os.makedirs(archive_dir, exist_ok=True)
-        # Add timestamp to filename and move to archive
-        base_file = os.path.join(archive_dir, os.path.basename(base_file))
-        ts = datetime.now().strftime("%y%m%d")
-        root, ext = os.path.splitext(base_file)
-        new_filename = f"{root}_{ts}{ext}" if ext else f"{root}_{ts}"
-        try:
-            serialize_tree(self.tree_obj, new_filename, sort_mode=self.sort_mode)
-            self._archive_to_secondary(self.tree_obj, os.path.basename(new_filename), self.sort_mode)
-            self.refresh_status(f"Saved as {os.path.basename(new_filename)}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save: {e}")
-            return
-        try:
-            self._clear_loaded_trees()
+                    
+            if all_unsaved:
+                self._clear_workspace()
+            else:
+                selected = self._get_selected_systems()
+                for system_key in list(selected):
+                    if system_key in self.multi_trees:
+                        del self.multi_trees[system_key]
+                    if system_key in self.sort_state:
+                        del self.sort_state[system_key]
+                    self.unsaved_changes.discard(system_key)
+                self.populate_treeview()
             self.refresh_status("Ready")
         except Exception as e:
+            messagebox.showerror("Error", f"Failed to archive trees: {e}")
             messagebox.showerror("Error", f"Failed to close tree: {e}")
 
     def on_select(self, _event):
@@ -2326,9 +1932,7 @@ class SampleTreeGUI:
             self.class_var.set("")
             self.update_properties_panel(None)
             return
-        parent_label = ctx["node_id"]
-        if self.display_mode == "multi":
-            parent_label = f"{os.path.basename(ctx['file'])}: {ctx['node_id']}"
+        parent_label = f"{os.path.basename(ctx['file'])}: {ctx['node_id']}"
         self.parent_label_var.set(parent_label)
         self.populate_child_class_options(ctx["tree"], ctx["node_id"])
         self.update_properties_panel(ctx)
@@ -2402,10 +2006,7 @@ class SampleTreeGUI:
                       data={"obj": obj})
         self._refresh_after_tree_change(system_key=ctx["system_key"], focus_node_id=obj.id)
         self.unsaved_changes.add(ctx["system_key"])
-        if self.display_mode == "multi":
-            self.refresh_status(f"Added {class_name} node in {os.path.basename(ctx['file'])}.")
-        else:
-            self.refresh_status(f"Added {class_name} node.")
+        self.refresh_status(f"Added {class_name} node in {os.path.basename(ctx['file'])}.")
 
     def delete_node(self):
         ctx = self._selected_node_context()
@@ -2437,10 +2038,7 @@ class SampleTreeGUI:
 
         self._refresh_after_tree_change(system_key=ctx["system_key"])
         self.unsaved_changes.add(ctx["system_key"])
-        if self.display_mode == "multi":
-            self.refresh_status(f"Deleted {class_name} node from {os.path.basename(ctx['file'])}.")
-        else:
-            self.refresh_status(f"Deleted {class_name} node.")
+        self.refresh_status(f"Deleted {class_name} node from {os.path.basename(ctx['file'])}.")
 
     # ---------- Search Property Window ----------
     def search_property(self):
@@ -2456,12 +2054,9 @@ class SampleTreeGUI:
                 self.result_entries = []
                 self.result_texts = []
 
-                if gui.display_mode == "multi":
-                    self.search_sources = [
-                        (system_key, gui.multi_trees[system_key]["tree"]) for system_key in sorted(gui.multi_trees.keys())
-                    ]
-                else:
-                    self.search_sources = [("single", gui.tree_obj)] if gui.tree_obj else []
+                self.search_sources = [
+                    (system_key, gui.multi_trees[system_key]["tree"]) for system_key in sorted(gui.multi_trees.keys())
+                ]
 
                 frame = ttk.Frame(self)
                 frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -2727,16 +2322,10 @@ class SampleTreeGUI:
                         {"system_key": system_key, "node_id": node_id}
                         for system_key, node_id, *_rest in matches
                     ]
-                    if gui.display_mode == "multi":
-                        self.result_texts = [
-                            f"{node_tag} [{node_id_text}] ({os.path.basename(gui.multi_trees[system_key]['file'])}): {prop_key} = {prop_value}"
-                            for system_key, node_id, node_tag, node_id_text, prop_key, prop_value in matches
-                        ]
-                    else:
-                        self.result_texts = [
-                            f"{node_tag} [{node_id_text}]: {prop_key} = {prop_value}"
-                            for system_key, node_id, node_tag, node_id_text, prop_key, prop_value in matches
-                        ]
+                    self.result_texts = [
+                        f"{node_tag} [{node_id_text}] ({os.path.basename(gui.multi_trees[system_key]['file'])}): {prop_key} = {prop_value}"
+                        for system_key, node_id, node_tag, node_id_text, prop_key, prop_value in matches
+                    ]
 
                     self.results_list.delete(0, tk.END)
                     for text in self.result_texts:
@@ -2772,60 +2361,34 @@ class SampleTreeGUI:
                 # Collapse all nodes
                 for iid in self.treeview.get_children(""):
                     self.recursive_close(iid)
-                if gui.display_mode == "multi":
-                    info = gui.multi_trees.get(system_key)
-                    if not info:
-                        return
-                    tree = info["tree"]
-                    path = []
-                    cur = node_id
-                    while True:
-                        node = tree.get_node(cur)
-                        if node is None:
-                            break
-                        path.append(cur)
-                        parent = tree.parent(cur)
-                        if parent is None:
-                            break
-                        cur = parent.identifier
-                    for nid in reversed(path):
-                        iid = gui._multi_tree_iid(system_key, nid)
-                        if not iid:
-                            continue
-                        try:
-                            self.treeview.item(iid, open=True)
-                        except Exception:
-                            pass
-                    target_iid = gui._multi_tree_iid(system_key, node_id)
-                    if target_iid:
-                        try:
-                            self.treeview.selection_set(target_iid)
-                            self.treeview.see(target_iid)
-                        except Exception:
-                            pass
-                else:
-                    tree = gui.tree_obj
-                    if not tree:
-                        return
-                    path = []
-                    cur = node_id
-                    while True:
-                        node = tree.get_node(cur)
-                        if node is None:
-                            break
-                        path.append(cur)
-                        parent = tree.parent(cur)
-                        if parent is None:
-                            break
-                        cur = parent.identifier
-                    for nid in reversed(path):
-                        try:
-                            self.treeview.item(nid, open=True)
-                        except Exception:
-                            pass
+                info = gui.multi_trees.get(system_key)
+                if not info:
+                    return
+                tree = info["tree"]
+                path = []
+                cur = node_id
+                while True:
+                    node = tree.get_node(cur)
+                    if node is None:
+                        break
+                    path.append(cur)
+                    parent = tree.parent(cur)
+                    if parent is None:
+                        break
+                    cur = parent.identifier
+                for nid in reversed(path):
+                    iid = gui._get_treeview_iid(system_key, nid)
+                    if not iid:
+                        continue
                     try:
-                        self.treeview.selection_set(node_id)
-                        self.treeview.see(node_id)
+                        self.treeview.item(iid, open=True)
+                    except Exception:
+                        pass
+                target_iid = gui._get_treeview_iid(system_key, node_id)
+                if target_iid:
+                    try:
+                        self.treeview.selection_set(target_iid)
+                        self.treeview.see(target_iid)
                     except Exception:
                         pass
 
@@ -2834,14 +2397,9 @@ class SampleTreeGUI:
                 for child in self.treeview.get_children(iid):
                     self.recursive_close(child)
 
-        if self.display_mode == "multi":
-            if not self.multi_trees:
-                messagebox.showwarning("No Tree", "No tree loaded.")
-                return
-        else:
-            if not self.tree_obj:
-                messagebox.showwarning("No Tree", "No tree loaded.")
-                return
+        if not self.multi_trees:
+            messagebox.showwarning("No Tree", "No tree loaded.")
+            return
         SearchWindow(self.root, self.treeview)
 
 # ---------- Main Launch ----------

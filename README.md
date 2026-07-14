@@ -70,9 +70,9 @@ This launches the GUI (`launch_gui()` in `database_GUI.py`).
 To compile the application into a standalone Windows executable, simply double-click the `build.bat` file in the project root.
 
 - A terminal will prompt you for a custom output directory.
-- If you provide a path (e.g., `C:\MyApps\DatabaseExplorer`), the executable and data files will be built there.
-- If you press Enter, it defaults to a `dist/database_explorer` folder.
-- The script automatically copies necessary files (`db.ico`, `help.json`, `database_structure.json`) alongside the executable, skipping any that already exist to protect your data.
+- **Custom Compilation Possibility**: If you provide a custom path (e.g., `C:\MyApps\DatabaseExplorer`), the executable and necessary data files will be built and placed directly there, making it portable.
+- If you press Enter, it defaults to placing the output in a `dist/database_explorer` folder.
+- The script automatically copies necessary resources (`db.ico`, `help.json`, `database_structure.json`) alongside the executable, skipping any that already exist to protect your custom data.
 
 ## Build the exe manually
 
@@ -126,8 +126,9 @@ Place and run it from a working folder that contains (or can create) these along
    - click **File -> Save Tree** for normal save
    - click **File -> Save, Archive and Close** to version it locally and copy it to your secondary backup folder. This also creates a monthly rolling backup of your `database_structure.json` schema!
 7. Load existing data:
-   - **File -> Load Tree** for one JSON file
-   - **File -> Load Multiple Trees** to browse and open several JSON files in `databases/`
+   - **File -> Load Tree(s)** to browse and open one or multiple JSON files in `databases/`.
+   - Loading large files runs in the background, keeping the UI responsive.
+   - All open trees share a unified multi-tree workspace. You can manage them simultaneously and use **File -> Close Selected Trees** to close specific ones.
 8. Search and inspect:
    - use **Tools -> Search** to find properties across loaded tree(s)
    - use **Edit Node** on selected items in the bottom action bar
