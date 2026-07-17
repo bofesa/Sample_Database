@@ -559,6 +559,8 @@ class SampleTreeGUI:
         # 1. Quick Access Top Bar
         top_bar = ttk.Frame(main)
         top_bar.pack(fill="x", pady=(0, 2))
+        ttk.Button(top_bar, text="Load Tree", command=self.load_tree).pack(side="left", padx=2)
+        ttk.Button(top_bar, text="Close Selected Trees", command=self.close_selected_trees).pack(side="left", padx=2)
         ttk.Button(top_bar, text="Collapse All", command=self.collapse_all_trees).pack(side="left", padx=2)
         ttk.Button(top_bar, text="Expand All", command=self.expand_all_trees).pack(side="left", padx=2)
         ttk.Button(top_bar, text="Search", command=self.search_property).pack(side="left", padx=2)
