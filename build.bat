@@ -31,9 +31,27 @@ python -m PyInstaller --noconfirm --onedir -w --icon=db.ico %DIST_ARG% database_
 
 echo.
 echo Copying necessary data files to the output folder...
-copy /Y db.ico "%FINAL_DIR%\"
-copy /Y help.json "%FINAL_DIR%\"
-copy /Y database_structure.json "%FINAL_DIR%\"
+
+if exist "%FINAL_DIR%\db.ico" (
+    echo  - [SKIP] db.ico already exists.
+) else (
+    copy /Y db.ico "%FINAL_DIR%\" >nul
+    echo  - [OK] db.ico copied successfully.
+)
+
+if exist "%FINAL_DIR%\help.json" (
+    echo  - [SKIP] help.json already exists.
+) else (
+    copy /Y help.json "%FINAL_DIR%\" >nul
+    echo  - [OK] help.json copied successfully.
+)
+
+if exist "%FINAL_DIR%\database_structure.json" (
+    echo  - [SKIP] database_structure.json already exists.
+) else (
+    copy /Y database_structure.json "%FINAL_DIR%\" >nul
+    echo  - [OK] database_structure.json copied successfully.
+)
 
 echo.
 echo Build complete! You can find the compiled application in:

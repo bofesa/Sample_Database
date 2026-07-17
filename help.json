@@ -1,10 +1,11 @@
 {
   "General Overview": "This program manages hierarchical sample and processing data. You can define what types of samples or processing steps exist, how they relate, and track their properties over time.",
-  "Creating & Managing Trees": "Click 'File -> New Tree' to start a new database. Use 'File -> Load Tree' to open an existing one, or 'Load Multiple Trees' to view several at once. Trees are saved in JSON format.",
+  "Creating & Managing Trees": "Click 'File -> New Tree' to start a new database, or 'File -> Load Tree(s)' to open existing ones. The app uses a unified multi-tree workspace, loading large files smoothly in the background. Use 'File -> Close Selected Trees' to close specific trees.",
   "Managing Nodes": "Select a node in the tree and use the bottom panel to Create, Edit, or Copy nodes. Only permitted child types for the selected node will be available. The right panel displays the properties of the selected node.",
   "Structure Browser": "Use 'Tools -> Structure Browser' to see how your database schema is structured. It shows classes, permitted children, and all required or custom properties.",
   "Adding New Structures": "Need a new sample type or processing step? Go to 'Advanced -> Add New Structure'. You can define a new class, required properties, and allowed parent/child relationships without writing code.",
-  "Backup Settings": "Go to 'Settings -> Backup Settings' to set a secondary backup directory. Whenever you use 'File -> Save, Archive and Close' or close a tree, your database is saved locally and backed up to this folder.",
+  "Backup Settings": "Go to 'Settings -> Backup Settings' to set a secondary backup directory. Whenever you use 'File -> Save, Archive and Close', your databases and a monthly rolling backup of your configuration are saved locally and backed up to this folder.",
+  "Startup Settings": "Go to 'Settings -> Auto-Load Databases on Startup' to toggle whether the application should automatically open your last active workspace when launched.",
   "Searching": "Use 'Tools -> Search' (or the quick bar button) to find nodes matching specific property keys and values across your loaded trees.",
   "Legacy Import": "If you have older .txt configuration files (database_keys.txt), use 'Advanced -> Import Legacy Keys' to merge them into the new JSON schema."
 }

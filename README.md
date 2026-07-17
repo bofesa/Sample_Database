@@ -65,7 +65,16 @@ python database_explorer.py
 
 This launches the GUI (`launch_gui()` in `database_GUI.py`).
 
-## Build the Windows EXE
+## Build the Windows EXE using build.bat file
+
+To compile the application into a standalone Windows executable, simply double-click the `build.bat` file in the project root.
+
+- A terminal will prompt you for a custom output directory.
+- **Custom Compilation Possibility**: If you provide a custom path (e.g., `C:\MyApps\DatabaseExplorer`), the executable and necessary data files will be built and placed directly there, making it portable.
+- If you press Enter, it defaults to placing the output in a `dist/database_explorer` folder.
+- The script automatically copies necessary resources (`db.ico`, `help.json`, `database_structure.json`) alongside the executable, skipping any that already exist to protect your custom data.
+
+## Build the exe manually
 
 From the project root:
 
@@ -115,14 +124,16 @@ Place and run it from a working folder that contains (or can create) these along
    - click **Create Node**
 6. Save progress:
    - click **File -> Save Tree** for normal save
-   - click **File -> Save, Archive and Close** to cleanly save, version it locally, and also copy it to your configured secondary backup folder.
+   - click **File -> Save, Archive and Close** to version it locally and copy it to your secondary backup folder. This also creates a monthly rolling backup of your `database_structure.json` schema!
 7. Load existing data:
-   - **File -> Load Tree** for one JSON file
-   - **File -> Load Multiple Trees** to browse and open several JSON files in `databases/`
+   - **File -> Load Tree(s)** to browse and open one or multiple JSON files in `databases/`.
+   - Loading large files runs in the background, keeping the UI responsive.
+   - All open trees share a unified multi-tree workspace. You can manage them simultaneously and use **File -> Close Selected Trees** to close specific ones.
 8. Search and inspect:
    - use **Tools -> Search** to find properties across loaded tree(s)
    - use **Edit Node** on selected items in the bottom action bar
 9. Help & Settings:
+   - **Settings -> Auto-Load Databases on Startup**: Toggles whether the app opens your last active workspace automatically.
    - **Settings -> Backup Settings**: Setup a secondary folder path to maintain remote/cloud backups.
    - **Help -> Help Documentation**: Provides a quick overview of how the program works via `help.json`.
 
