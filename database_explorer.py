@@ -1,4 +1,5 @@
 from database_GUI import launch_gui
+print("Launching Database Explorer GUI...")
 launch_gui()
 
 ### to build as exe, run:
