@@ -584,7 +584,7 @@ class SampleTreeGUI:
         # Row 0: Selected Node info
         ttk.Label(action_frame, text="Selected Node:").grid(row=0, column=0, sticky="w", padx=4, pady=4)
         self.parent_label_var = tk.StringVar(value="-")
-        ttk.Label(action_frame, textvariable=self.parent_label_var, font=("TkDefaultFont", 9, "bold")).grid(row=0, column=1, sticky="w", padx=4, pady=4)
+        ttk.Label(action_frame, textvariable=self.parent_label_var).grid(row=0, column=1, sticky="w", padx=4, pady=4)
 
         # Row 1: Node Actions (Edit, Copy, Delete)
         node_actions_frame = ttk.Frame(action_frame)
@@ -1928,7 +1928,8 @@ class SampleTreeGUI:
             self.class_var.set("")
             self.update_properties_panel(None)
             return
-        parent_label = f"{os.path.basename(ctx['file'])}: {ctx['node_id']}"
+        tree_name = os.path.splitext(os.path.basename(ctx['file']))[0]
+        parent_label = f"{tree_name}: {ctx['node_id']}"
         self.parent_label_var.set(parent_label)
         self.populate_child_class_options(ctx["tree"], ctx["node_id"])
         self.update_properties_panel(ctx)
