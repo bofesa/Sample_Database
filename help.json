@@ -6,6 +6,6 @@
   "Adding New Structures": "Need a new sample type or processing step? Go to 'Advanced -> Add New Structure'. You can define a new class, required properties, and allowed parent/child relationships without writing code.",
   "Backup Settings": "Go to 'Settings -> Backup Settings' to set a secondary backup directory. Whenever you use 'File -> Save, Archive and Close', your databases and a monthly rolling backup of your configuration are saved locally and backed up to this folder.",
   "Startup Settings": "Go to 'Settings -> Auto-Load Databases on Startup' to toggle whether the application should automatically open your last active workspace when launched.",
-  "Searching": "Use 'Tools -> Search' (or the quick bar button) to find nodes matching specific property keys and values across your loaded trees.",
+  "Searching": "Use 'Tools -> Search' (or press Ctrl+F) to find nodes matching specific property keys and values across your loaded trees. The search features real-time as-you-type filtering, keyboard navigation, and double-click to instantly edit results.",
   "Legacy Import": "If you have older .txt configuration files (database_keys.txt), use 'Advanced -> Import Legacy Keys' to merge them into the new JSON schema."
 }
