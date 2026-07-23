@@ -3,6 +3,7 @@ from datetime import datetime
 import colorsys
 import threading
 import os
+import traceback
 import tkinter as tk
 
 # -------- GUI + Tree persistence utilities --------
@@ -105,6 +106,9 @@ def deserialize_tree(filename):
 # ---------- Utility to build kwargs via dialog ----------
 
 class PropertyEditor(tk.Toplevel):
+    BLANK_PROPERTY_KEY = ""
+    NEW_PROPERTY_SENTINEL = "<New property...>"
+
     def __init__(self, master, sample_class, existing_keys, required_props):
         super().__init__(master)
         self.title(f"Properties for {sample_class.__name__}")
@@ -120,8 +124,11 @@ class PropertyEditor(tk.Toplevel):
         self.rows = []  # (key_var, val_var, key_cb)
         ttk.Label(self.prop_frame, text="Required properties:").grid(row=0, column=0, columnspan=3, sticky="w")
 
-        self.existing_keys = sorted(existing_keys)
-        self.existing_keys.insert(0, "<New property...>")
+        self.existing_keys = sorted({
+            str(k).strip()
+            for k in existing_keys
+            if str(k).strip() and str(k).strip() != self.NEW_PROPERTY_SENTINEL
+        })
         r = 1
         for rp in self.req:
             kv = tk.StringVar(value=rp)
@@ -152,6 +159,15 @@ class PropertyEditor(tk.Toplevel):
 
         self.add_optional_row()
 
+    def optional_key_values(self):
+        return [self.BLANK_PROPERTY_KEY] + self.existing_keys + [self.NEW_PROPERTY_SENTINEL]
+
+    def refresh_optional_comboboxes(self):
+        values = self.optional_key_values()
+        for child in self.opt_container.winfo_children():
+            if isinstance(child, ttk.Combobox):
+                child["values"] = values
+
     def add_optional_row(self):
         # Determine next available row index inside the optional container by inspecting existing widgets' rows
         existing_rows = [int(w.grid_info().get('row', 0)) for w in self.opt_container.grid_slaves()]
@@ -159,28 +175,27 @@ class PropertyEditor(tk.Toplevel):
 
         kv = tk.StringVar()
         vv = tk.StringVar()
-        cb = ttk.Combobox(self.opt_container, values=self.existing_keys, textvariable=kv, width=22)
+        cb = ttk.Combobox(self.opt_container, values=self.optional_key_values(), textvariable=kv, width=22)
         cb.grid(row=row_index, column=0, padx=2, pady=2, sticky="w")
         ent = ttk.Entry(self.opt_container, textvariable=vv, width=28)
         ent.grid(row=row_index, column=1, padx=2, pady=2, sticky="w")
 
         def on_select(_event):
-            if kv.get() == "<New property...>":
+            if kv.get() == self.NEW_PROPERTY_SENTINEL:
                 new_key = simpledialog.askstring("New property", "Enter new property name:", parent=self)
-                if new_key:
-                    # Insert before sentinel if not already present
-                    if new_key not in self.existing_keys:
-                        self.existing_keys.append(new_key)
-                    kv.set(new_key)
-                    # Update all combobox values to include the new key
-                    for rset in self.rows:
-                        try:
-                            rset[2]['values'] = self.existing_keys
-                        except Exception:
-                            pass
-                    for child in self.opt_container.winfo_children():
-                        if isinstance(child, ttk.Combobox):
-                            child['values'] = self.existing_keys
+                new_key = "" if new_key is None else new_key.strip()
+                if not new_key:
+                    kv.set(self.BLANK_PROPERTY_KEY)
+                    return
+                if new_key == self.NEW_PROPERTY_SENTINEL:
+                    messagebox.showerror("Invalid property", f"{self.NEW_PROPERTY_SENTINEL} is reserved for the new-property menu item.")
+                    kv.set(self.BLANK_PROPERTY_KEY)
+                    return
+                if new_key not in self.existing_keys:
+                    self.existing_keys.append(new_key)
+                    self.existing_keys.sort()
+                kv.set(new_key)
+                self.refresh_optional_comboboxes()
 
         cb.bind("<<ComboboxSelected>>", on_select)
         self.rows.append((kv, vv, cb))
@@ -191,7 +206,7 @@ class PropertyEditor(tk.Toplevel):
         for kv, vv, _ in self.rows:
             k = kv.get().strip()
             v = vv.get()
-            if not k:
+            if not k or k == self.NEW_PROPERTY_SENTINEL:
                 continue
             if k in props:
                 messagebox.showerror("Error", f"Duplicate property key: {k}")
@@ -2402,8 +2417,43 @@ class SampleTreeGUI:
         SearchWindow(self.root, self.treeview)
 
 # ---------- Main Launch ----------
+def show_callback_exception(exc_type, exc_value, exc_traceback):
+    details = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    dlg = tk.Toplevel()
+    dlg.title("Unexpected Error")
+    dlg.geometry("760x420")
+    dlg.minsize(520, 260)
+    dlg.transient(dlg.master)
+
+    frame = ttk.Frame(dlg)
+    frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+    ttk.Label(
+        frame,
+        text="An unexpected error occurred. Details:",
+        font=("TkDefaultFont", 10, "bold")
+    ).pack(anchor="w", pady=(0, 6))
+
+    text_frame = ttk.Frame(frame)
+    text_frame.pack(fill="both", expand=True)
+
+    text = tk.Text(text_frame, wrap="word", height=14)
+    text.insert("1.0", details)
+    text.configure(state="disabled")
+    text.pack(side="left", fill="both", expand=True)
+
+    scroll = ttk.Scrollbar(text_frame, orient="vertical", command=text.yview)
+    scroll.pack(side="right", fill="y")
+    text.configure(yscrollcommand=scroll.set)
+
+    ttk.Button(frame, text="Close", command=dlg.destroy).pack(anchor="e", pady=(8, 0))
+    dlg.grab_set()
+    dlg.focus_set()
+
+
 def launch_gui():
     root = tk.Tk()
+    root.report_callback_exception = show_callback_exception
     icon_path = os.path.join(BASE_DIR, "db.ico")
     try:
         root.iconbitmap(icon_path)

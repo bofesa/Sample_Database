@@ -12,6 +12,6 @@ launch_gui()
 # or simply double-click the build.bat file.
 
 # alternative simple build command:
-    # pyinstaller --onefile --console --splash db.png --icon=db.ico --name DatabaseExplorer database_explorer.py
+    # pyinstaller --onefile --w --splash db.png --icon=db.ico --name DatabaseExplorer database_explorer.py
         # -console or -w (windowed) option
         # -onedir (one folder) or -onefile (single exe file) option
