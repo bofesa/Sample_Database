@@ -13,7 +13,6 @@ echo By default, the compiled application will be placed in a 'dist' folder in t
 set /p OUT_DIR="Enter a custom output path (or press Enter to use default): "
 
 if "%OUT_DIR%"=="" (
-    set DIST_ARG=
     set FINAL_DIR=dist\database_explorer
     echo Building to default 'dist' directory...
 ) else (
@@ -21,13 +20,30 @@ if "%OUT_DIR%"=="" (
         echo Directory does not exist. Creating it now...
         mkdir "%OUT_DIR%"
     )
-    set DIST_ARG=--distpath "%OUT_DIR%"
     set FINAL_DIR=%OUT_DIR%\database_explorer
     echo Building to custom directory: "%OUT_DIR%"...
 )
 echo.
 
-python -m PyInstaller --noconfirm --onedir -w --icon=db.ico %DIST_ARG% database_explorer.py
+:: Build to a temporary distpath to avoid PyInstaller wiping the final directory
+python -m PyInstaller --noconfirm --onedir -w --icon=db.ico --distpath "pyinstaller_temp" database_explorer.py
+
+echo.
+echo Updating application files in the output folder...
+
+if not exist "%FINAL_DIR%" (
+    mkdir "%FINAL_DIR%"
+)
+
+:: Remove old internal PyInstaller files to avoid stale libraries
+if exist "%FINAL_DIR%\_internal" rmdir /S /Q "%FINAL_DIR%\_internal"
+if exist "%FINAL_DIR%\database_explorer.exe" del /F /Q "%FINAL_DIR%\database_explorer.exe"
+
+:: Copy the newly built application files (leaves user files like .json untouched)
+xcopy /E /Y /I "pyinstaller_temp\database_explorer\*" "%FINAL_DIR%\" >nul
+
+:: Clean up the temporary build directory
+rmdir /S /Q "pyinstaller_temp"
 
 echo.
 echo Copying necessary data files to the output folder...

@@ -258,11 +258,11 @@ class AddClassDialog(tk.Toplevel):
         lists_frame.columnconfigure(1, weight=1)
 
         ttk.Label(lists_frame, text="Permitted Children:").grid(row=0, column=0, sticky="w")
-        self.children_list = tk.Listbox(lists_frame, selectmode="multiple", height=6)
+        self.children_list = tk.Listbox(lists_frame, selectmode="multiple", height=6, exportselection=False)
         self.children_list.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
 
         ttk.Label(lists_frame, text="Permitted Parents:").grid(row=0, column=1, sticky="w")
-        self.parents_list = tk.Listbox(lists_frame, selectmode="multiple", height=6)
+        self.parents_list = tk.Listbox(lists_frame, selectmode="multiple", height=6, exportselection=False)
         self.parents_list.grid(row=1, column=1, sticky="nsew", padx=(5, 0))
 
         # Populate children list
@@ -465,6 +465,10 @@ class SampleTreeGUI:
         self.properties_panel = None
         self.properties_panel_tree = None
         self.unsaved_changes = set()
+        
+        # Global Keyboard Shortcuts
+        self.root.bind("<Control-f>", lambda e: self.search_property())
+        self.root.bind("<Control-F>", lambda e: self.search_property())
         
         # Threading state variables
         self._loading_thread = None
@@ -2062,11 +2066,11 @@ class SampleTreeGUI:
             def __init__(self, master, treeview):
                 super().__init__(master)
                 self.title("Search Property")
-                self.geometry("460x360")
-                self.resizable(False, False)
+                self.geometry("700x450")
+                self.attributes('-topmost', True)
                 self.treeview = treeview
                 self.result_entries = []
-                self.result_texts = []
+                self._search_after_id = None
 
                 self.search_sources = [
                     (system_key, gui.multi_trees[system_key]["tree"]) for system_key in sorted(gui.multi_trees.keys())
@@ -2076,7 +2080,7 @@ class SampleTreeGUI:
                 frame.pack(fill="both", expand=True, padx=10, pady=10)
 
                 # Load node types
-                nodes_types = ['any']
+                nodes_types = ['<Any Type>']
                 try:
                     with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
                         schema = json.load(f)
@@ -2086,17 +2090,16 @@ class SampleTreeGUI:
                 except Exception:
                     pass
                 nodes_types = sorted(list(set(nodes_types)))
-                        
 
                 self.additional_keys = ['id', 'entry_created_date']
-                
+
                 # Fetch keys directly from schema
                 def get_schema_keys(class_name=None):
                     keys = set()
                     try:
                         with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
                             schema = json.load(f)
-                            if class_name and class_name != "any":
+                            if class_name and class_name != "<Any Type>":
                                 config = schema.get(class_name, {})
                                 keys.update(config.get("required", []))
                                 keys.update(config.get("custom", []))
@@ -2107,35 +2110,62 @@ class SampleTreeGUI:
                     except Exception:
                         pass
                     return sorted(list(keys))
-                
+
                 def update_db_display_keys():
                     db_display_keys = self.additional_keys.copy()
                     db_display_keys.extend(get_schema_keys(self.type_var.get()))
+                    db_display_keys.insert(0, "<Any Property>")
                     db_display_keys.append("<Custom key...>")
                     return db_display_keys
-                    
 
-                ttk.Label(frame, text="Node type:").grid(row=0, column=0, sticky="w")
-                self.type_var = tk.StringVar(value='any')
+                self.tree_display_names = ["<Any Tree>"]
+                self.tree_display_map = {}
+                for system_key, tree in self.search_sources:
+                    file_name = os.path.basename(gui.multi_trees[system_key]['file'])
+                    display_name = f"{file_name} ({system_key})"
+                    self.tree_display_names.append(display_name)
+                    self.tree_display_map[display_name] = system_key
+
+                ttk.Label(frame, text="Target tree:").grid(row=0, column=0, sticky="w")
+                self.target_tree_var = tk.StringVar(value="<Any Tree>")
+                self.target_tree_cb = ttk.Combobox(frame, values=self.tree_display_names, textvariable=self.target_tree_var, state="readonly", width=28)
+                self.target_tree_cb.grid(row=0, column=1, sticky="w")
+                self.target_tree_cb.bind("<<ComboboxSelected>>", self.schedule_search)
+
+                ttk.Label(frame, text="Node type:").grid(row=1, column=0, sticky="w")
+
+                self.type_var = tk.StringVar(value='<Any Type>')
                 self.type_cb = ttk.Combobox(frame, values=nodes_types, textvariable=self.type_var, state="readonly", width=28)
-                self.type_cb.grid(row=0, column=1, sticky="w")
+                self.type_cb.grid(row=1, column=1, sticky="w")
 
-                ttk.Label(frame, text="Property key:").grid(row=1, column=0, sticky="w")
-                self.key_var = tk.StringVar()
+                ttk.Label(frame, text="Property key:").grid(row=2, column=0, sticky="w")
+                self.key_var = tk.StringVar(value="<Any Property>")
                 self.key_cb = ttk.Combobox(frame, values=update_db_display_keys(), textvariable=self.key_var, state="readonly", width=28)
-                self.key_cb.grid(row=1, column=1, sticky="w")
+                self.key_cb.grid(row=2, column=1, sticky="w")
 
-                ttk.Label(frame, text="Property value (optional):").grid(row=2, column=0, sticky="w")
+                ttk.Label(frame, text="Search Value:").grid(row=3, column=0, sticky="w")
+
+                val_frame = ttk.Frame(frame)
+                val_frame.grid(row=3, column=1, sticky="w")
                 self.val_var = tk.StringVar()
-                self.val_entry = ttk.Entry(frame, textvariable=self.val_var, width=28)
-                self.val_entry.grid(row=2, column=1, sticky="w")
+                self.val_entry = ttk.Entry(val_frame, textvariable=self.val_var, width=28)
+                self.val_entry.pack(side="left")
 
-                self.partial_var = tk.BooleanVar(value=False)
-                self.partial_cb = ttk.Checkbutton(frame, text="Search partial match", variable=self.partial_var)
-                self.partial_cb.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                def clear_search():
+                    self.val_var.set("")
+                    self.schedule_search()
+                    self.val_entry.focus()
+
+                ttk.Button(val_frame, text="X", width=2, command=clear_search).pack(side="left", padx=2)
+
+                self.partial_var = tk.BooleanVar(value=True)
+                self.partial_cb = ttk.Checkbutton(frame, text="Search for partial matches", variable=self.partial_var, command=self.schedule_search)
+                self.partial_cb.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+                self.status_var = tk.StringVar(value="Type to search...")
+                ttk.Label(frame, textvariable=self.status_var, font=("TkDefaultFont", 9, "italic")).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 4))
 
                 def on_key_select(_event):
-                    # Handle custom key entry
                     if self.key_var.get() == "<Custom key...>":
                         new_key = simpledialog.askstring("Custom key", "Enter custom property key:", parent=self)
                         if new_key:
@@ -2144,30 +2174,63 @@ class SampleTreeGUI:
                             if new_key not in disp_keys:
                                 disp_keys.insert(-1, new_key)
                                 self.key_cb['values'] = disp_keys
-                    # If node type changes, update available keys
                     elif _event.widget == self.type_cb:
                         self.key_cb['values'] = update_db_display_keys()
                         if self.key_cb.get() not in self.key_cb['values']:
-                            self.key_var.set("")
+                            self.key_var.set("<Any Property>")
+                    self.schedule_search()
 
                 self.type_cb.bind("<<ComboboxSelected>>", on_key_select)
                 self.key_cb.bind("<<ComboboxSelected>>", on_key_select)
+                self.val_entry.bind("<KeyRelease>", self.schedule_search)
 
-                self.search_btn = ttk.Button(frame, text="Search", command=self.do_search)
-                self.search_btn.grid(row=4, column=0, columnspan=2, pady=8)
+                tree_frame = ttk.Frame(frame)
+                tree_frame.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=4)
 
-                self.results_list = tk.Listbox(frame, height=10, width=48)
-                self.results_list.grid(row=5, column=0, columnspan=2, sticky="nsew", pady=4)
-                self.results_list.bind("<Double-Button-1>", self.on_open_node)
+                columns = ("Node ID", "Property", "Value", "File")
+                self.results_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=10)
+                for col in columns:
+                    self.results_tree.heading(col, text=col)
+                self.results_tree.column("Node ID", width=120, anchor="w")
+                self.results_tree.column("Property", width=120, anchor="w")
+                self.results_tree.column("Value", width=250, anchor="w")
+                self.results_tree.column("File", width=100, anchor="w")
 
-                ttk.Button(frame, text="Close", command=self.destroy).grid(row=6, column=0, columnspan=2, pady=4)
+                scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.results_tree.yview)
+                self.results_tree.configure(yscroll=scrollbar.set)
 
-                frame.rowconfigure(5, weight=1)
+                self.results_tree.pack(side="left", fill="both", expand=True)
+                scrollbar.pack(side="right", fill="y")
+
+                self.results_tree.bind("<Double-Button-1>", self.on_double_click_node)
+                self.results_tree.bind("<Return>", self.on_enter_node)
+                self.results_tree.bind("<<TreeviewSelect>>", self.on_select_node)
+
+                def on_down_arrow(event):
+                    if self.results_tree.get_children():
+                        self.results_tree.focus_set()
+                        first = self.results_tree.get_children()[0]
+                        self.results_tree.selection_set(first)
+                        self.results_tree.focus(first)
+                        return "break"
+                self.val_entry.bind("<Down>", on_down_arrow)
+
+                ttk.Button(frame, text="Close", command=self.destroy).grid(row=7, column=0, columnspan=2, pady=4)
+
+                frame.rowconfigure(6, weight=1)
                 frame.columnconfigure(1, weight=1)
+
+                self.after(100, self.val_entry.focus_set)
+
+            def schedule_search(self, event=None):
+                if event and event.keysym in ("Up", "Down", "Left", "Right", "Tab", "Return", "Shift_L", "Shift_R", "Control_L", "Control_R"):
+                    return
+                if self._search_after_id:
+                    self.after_cancel(self._search_after_id)
+                self._search_after_id = self.after(300, self.do_search)
 
             def _normalize_text(self, text, id_mode=False):
                 import re
-
                 normalized = str(text).lower()
                 normalized = re.sub(r"[_-]+", " ", normalized)
                 normalized = re.sub(r"\s+", " ", normalized).strip()
@@ -2209,16 +2272,23 @@ class SampleTreeGUI:
                 props = dict(props_raw)
                 props.update({attr_key: getattr(obj, attr_key, "") for attr_key in self.additional_keys if hasattr(obj, attr_key)})
 
+                any_key = (key_query == "<Any Property>")
+
                 for prop_key, prop_value in props.items():
                     prop_key_text = str(prop_key)
                     prop_value_text = "" if prop_value is None else str(prop_value)
                     id_mode = prop_key_text.lower() == "id"
 
-                    if mode == "exact":
+                    if any_key:
+                        key_ok = True
+                    elif mode == "exact":
                         key_ok = self._text_matches(key_query, prop_key_text, "exact", id_mode=False)
-                        value_ok = True if value_query == "" else self._text_matches(value_query, prop_value_text, "exact", id_mode=id_mode)
                     else:
                         key_ok = self._text_matches(key_query, prop_key_text, mode, id_mode=False)
+
+                    if mode == "exact":
+                        value_ok = True if value_query == "" else self._text_matches(value_query, prop_value_text, "exact", id_mode=id_mode)
+                    else:
                         value_ok = True if value_query == "" else self._text_matches(value_query, prop_value_text, mode, id_mode=id_mode)
 
                     if key_ok and value_ok:
@@ -2232,16 +2302,21 @@ class SampleTreeGUI:
                 key_query = self.key_var.get().strip()
                 value_query = self.val_var.get().strip()
 
-                if not key_query:
+                if not value_query and key_query == "<Any Property>":
                     return matches
 
+                selected_tree = self.target_tree_var.get()
+                target_sys_key = self.tree_display_map.get(selected_tree)
+
                 for system_key, tree in self.search_sources:
+                    if target_sys_key and system_key != target_sys_key:
+                        continue
                     if not tree:
                         continue
                     for node in tree.all_nodes_itr():
                         if node.tag == "SYSTEM":
                             continue
-                        if self.type_var.get() != "any" and node.tag != self.type_var.get():
+                        if self.type_var.get() != "<Any Type>" and node.tag != self.type_var.get():
                             continue
 
                         matched, prop_key, prop_value = self._matches_node(node, key_query, value_query, mode)
@@ -2258,25 +2333,13 @@ class SampleTreeGUI:
                             seen_nodes.add(node_token)
 
                 return matches
-                
+
             def do_search(self):
-                self.results_list.delete(0, tk.END)
-                self.search_btn.config(state='disabled')
+                self.status_var.set("Searching...")
                 self.result_entries = []
-                self.result_texts = []
                 self.search_complete = False
                 self.timeout_shown = False
-                self.animate_frame = 0
-                
-                def animate_search_status():
-                    if self.search_complete:
-                        return
-                    dots = [".", "..", "..."][self.animate_frame % 3]
-                    self.search_btn.config(text=f"Searching{dots}")
-                    self.animate_frame += 1
-                    if not self.search_complete:
-                        self.after(1000, animate_search_status)
-                
+
                 def check_timeout():
                     if self.search_complete:
                         return
@@ -2285,22 +2348,24 @@ class SampleTreeGUI:
                         messagebox.showwarning("Search Timeout", "Search is taking longer than expected (10+ seconds)...", parent=self)
                     if not self.search_complete:
                         self.after(10000, check_timeout)
-                
+
                 def search_thread():
                     try:
                         if not self.search_sources:
+                            self.after_idle(lambda: update_results([]))
                             return
 
                         key = self.key_var.get().strip()
-                        if not key:
+                        val = self.val_var.get().strip()
+                        if not val and key == "<Any Property>":
+                            self.after_idle(lambda: update_results([]))
                             return
 
-                        node_type = self.type_var.get()
                         if not self.partial_var.get():
                             matches = self._collect_matches("exact")
                         else:
                             exact_matches = self._collect_matches("exact")
-                            seen_nodes = {(system_key, node_id) for system_key, node_id, *_rest in exact_matches}
+                            seen_nodes = {(s, n) for s, n, *_ in exact_matches}
                             normalized_matches = self._collect_matches("substring")
                             matches = exact_matches[:]
                             for item in normalized_matches:
@@ -2309,72 +2374,64 @@ class SampleTreeGUI:
                                     seen_nodes.add((item[0], item[1]))
 
                             if not matches:
-                                # For non-contiguous, we need to use after_idle to show dialog
-                                def ask_subsequence():
-                                    try_non_contiguous = messagebox.askyesno(
-                                        "No matches",
-                                        "No exact or normalized partial matches were found. Search for non-contiguous character matches?",
-                                        parent=self,
-                                    )
-                                    if try_non_contiguous:
-                                        nonlocal matches
-                                        matches = self._collect_matches("subsequence")
-                                    update_results()
-                                
-                                self.after_idle(ask_subsequence)
-                                return
+                                matches = self._collect_matches("subsequence")
 
-                        update_results(matches)
+                        self.after_idle(lambda: update_results(matches))
                     except Exception as e:
+                        self.after_idle(lambda: update_results([]))
                         self.after_idle(lambda: messagebox.showerror("Error", f"Search error: {e}", parent=self))
-                
-                def update_results(matches=None):
-                    if matches is None:
-                        return
-                    
+
+                def update_results(matches):
+                    self.search_complete = True
                     self.result_entries = [
                         {"system_key": system_key, "node_id": node_id}
                         for system_key, node_id, *_rest in matches
                     ]
-                    self.result_texts = [
-                        f"{node_tag} [{node_id_text}] ({os.path.basename(gui.multi_trees[system_key]['file'])}): {prop_key} = {prop_value}"
-                        for system_key, node_id, node_tag, node_id_text, prop_key, prop_value in matches
-                    ]
 
-                    self.results_list.delete(0, tk.END)
-                    for text in self.result_texts:
-                        self.results_list.insert(tk.END, text)
+                    self.results_tree.delete(*self.results_tree.get_children())
+                    for system_key, node_id, node_tag, node_id_text, prop_key, prop_value in matches:
+                        file_name = os.path.basename(gui.multi_trees[system_key]['file'])
+                        self.results_tree.insert("", "end", values=(
+                            f"{node_tag} [{node_id_text}]",
+                            prop_key,
+                            prop_value,
+                            file_name
+                        ))
 
                     if not self.result_entries:
-                        self.results_list.insert(tk.END, "No matches found.")
-                    
-                    self.search_complete = True
-                    self.search_btn.config(text="Search", state='normal')
-                
-                # Start animation and timeout checks
-                self.after(100, animate_search_status)
-                self.after(10000, check_timeout)
-                
-                # Start search in background thread
-                search_thread_obj = threading.Thread(target=search_thread, daemon=True)
-                search_thread_obj.start()
+                        self.status_var.set("No matches found.")
+                    else:
+                        self.status_var.set(f"Found {len(self.result_entries)} matches.")
 
-            def on_open_node(self, _event):
-                sel = self.results_list.curselection()
+                self.after(10000, check_timeout)
+                threading.Thread(target=search_thread, daemon=True).start()
+
+            def on_select_node(self, _event):
+                sel = self.results_tree.selection()
                 if not sel:
                     return
-                idx = sel[0]
+                idx = self.results_tree.index(sel[0])
                 if idx >= len(self.result_entries):
                     return
                 entry = self.result_entries[idx]
-                # Open this node in the treeview, closing all others
+                self.open_and_focus_node(entry["system_key"], entry["node_id"])
+
+            def on_double_click_node(self, _event):
+                sel = self.results_tree.selection()
+                if not sel:
+                    return
+                idx = self.results_tree.index(sel[0])
+                if idx >= len(self.result_entries):
+                    return
+                entry = self.result_entries[idx]
                 self.open_and_focus_node(entry["system_key"], entry["node_id"])
                 self.destroy()
+                gui.edit_node()
+
+            def on_enter_node(self, _event):
+                self.on_double_click_node(_event)
 
             def open_and_focus_node(self, system_key, node_id):
-                # Collapse all nodes
-                for iid in self.treeview.get_children(""):
-                    self.recursive_close(iid)
                 info = gui.multi_trees.get(system_key)
                 if not info:
                     return
@@ -2406,10 +2463,7 @@ class SampleTreeGUI:
                     except Exception:
                         pass
 
-            def recursive_close(self, iid):
-                self.treeview.item(iid, open=False)
-                for child in self.treeview.get_children(iid):
-                    self.recursive_close(child)
+
 
         if not self.multi_trees:
             messagebox.showwarning("No Tree", "No tree loaded.")
