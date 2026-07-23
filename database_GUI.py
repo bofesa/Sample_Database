@@ -243,11 +243,11 @@ class AddClassDialog(tk.Toplevel):
         lists_frame.columnconfigure(1, weight=1)
 
         ttk.Label(lists_frame, text="Permitted Children:").grid(row=0, column=0, sticky="w")
-        self.children_list = tk.Listbox(lists_frame, selectmode="multiple", height=6)
+        self.children_list = tk.Listbox(lists_frame, selectmode="multiple", height=6, exportselection=False)
         self.children_list.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
 
         ttk.Label(lists_frame, text="Permitted Parents:").grid(row=0, column=1, sticky="w")
-        self.parents_list = tk.Listbox(lists_frame, selectmode="multiple", height=6)
+        self.parents_list = tk.Listbox(lists_frame, selectmode="multiple", height=6, exportselection=False)
         self.parents_list.grid(row=1, column=1, sticky="nsew", padx=(5, 0))
 
         # Populate children list
