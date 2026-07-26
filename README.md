@@ -169,3 +169,8 @@ A complete public-safe example is included at `databases/example_tree.json`.
 - Unknown properties are accepted but logged with warnings and auto-added to `database_structure.json`.
 - Required properties are class-specific and enforced through the Structure JSON.
 - IDs and creation timestamps are immutable once created.
+
+
+## Development Acknowledgement
+
+Parts of this program were developed with the assistance of AI coding tools, including Google Gemini, OpenAI Codex/ChatGPT, and GitHub Copilot. These tools were used to help draft, refactor, test, and document code under human direction and review.
