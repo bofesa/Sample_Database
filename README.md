@@ -173,4 +173,4 @@ A complete public-safe example is included at `databases/example_tree.json`.
 
 ## Development Acknowledgement
 
-Parts of this program were developed with the assistance of AI coding tools, including Google Gemini, OpenAI Codex/ChatGPT, and GitHub Copilot. These tools were used to help draft, refactor, test, and document code under human direction and review.
+This program was developed with the assistance of AI coding tools, including Google Gemini, OpenAI Codex/ChatGPT, and GitHub Copilot. These tools were used to help draft, refactor, test, and document code under human direction and review.
