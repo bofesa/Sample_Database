@@ -511,7 +511,9 @@ class SampleTreeGUI:
         # Settings Menu
         settings_menu = tk.Menu(menubar, tearoff=0)
         self.auto_load_startup = tk.BooleanVar(value=True)
+        self.auto_expand_startup = tk.BooleanVar(value=True)
         settings_menu.add_checkbutton(label="Auto-Load Databases on Startup", variable=self.auto_load_startup, command=self.toggle_auto_load)
+        settings_menu.add_checkbutton(label="Auto-Expand Databases on Load", variable=self.auto_expand_startup, command=self.toggle_auto_expand)
         settings_menu.add_separator()
         settings_menu.add_command(label="Backup Settings", command=self.open_backup_settings)
         menubar.add_cascade(label="Settings", menu=settings_menu)
@@ -637,6 +639,7 @@ class SampleTreeGUI:
         try:
             cache = self.load_cache()
             self.auto_load_startup.set(cache.get("auto_load_startup", True))
+            self.auto_expand_startup.set(cache.get("auto_expand_startup", True))
             
             if self.auto_load_startup.get():
                 last_trees = cache.get("last_trees", [])
@@ -654,6 +657,9 @@ class SampleTreeGUI:
 
     def toggle_auto_load(self):
         self.save_cache({"auto_load_startup": self.auto_load_startup.get()})
+
+    def toggle_auto_expand(self):
+        self.save_cache({"auto_expand_startup": self.auto_expand_startup.get()})
 
     def update_last_trees_cache(self):
         paths = [info["file"] for info in self.multi_trees.values()]
@@ -712,6 +718,8 @@ class SampleTreeGUI:
                     
                     self.sort_var.set("none")
                     self.populate_treeview()
+                    if hasattr(self, 'auto_expand_startup') and self.auto_expand_startup.get():
+                        self.expand_all_trees()
                     self.parent_label_var.set("-")
                     self.class_cb['values'] = []
                     self.class_var.set("")
