@@ -3,6 +3,7 @@ from datetime import datetime
 import colorsys
 import threading
 import os
+import sys
 import traceback
 import tkinter as tk
 
@@ -11,6 +12,25 @@ import tkinter as tk
 from database_classes import BASE_DIR
 TREE_STORAGE_DIR = os.path.join(BASE_DIR, "databases")
 os.makedirs(TREE_STORAGE_DIR, exist_ok=True)
+
+# ---------- Icon handling & Toplevel defaults ----------
+
+def get_app_icon_path():
+    icon_path = os.path.join(BASE_DIR, "db.ico")
+    if not os.path.exists(icon_path) and hasattr(sys, "_MEIPASS"):
+        icon_path = os.path.join(sys._MEIPASS, "db.ico")
+    return icon_path
+
+_orig_toplevel_init = tk.Toplevel.__init__
+def _custom_toplevel_init(self, *args, **kwargs):
+    _orig_toplevel_init(self, *args, **kwargs)
+    try:
+        icon_path = get_app_icon_path()
+        if os.path.exists(icon_path):
+            self.iconbitmap(icon_path)
+    except Exception:
+        pass
+tk.Toplevel.__init__ = _custom_toplevel_init
 
 # ---------- Reflection / dynamic class discovery ----------
 
@@ -2516,13 +2536,14 @@ def show_callback_exception(exc_type, exc_value, exc_traceback):
 def launch_gui():
     root = tk.Tk()
     root.report_callback_exception = show_callback_exception
-    icon_path = os.path.join(BASE_DIR, "db.ico")
+    icon_path = get_app_icon_path()
     try:
         root.iconbitmap(icon_path)
+        root.iconbitmap(default=icon_path)
     except Exception:
         pass
     try:
-        root.iconphoto(False, tk.PhotoImage(file=icon_path))
+        root.iconphoto(True, tk.PhotoImage(file=icon_path))
     except Exception:
         pass
     root.geometry("1280x820")
