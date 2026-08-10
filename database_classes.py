@@ -127,6 +127,18 @@ class Sample:
         """ return a string that unambiguously describes the object"""
         return f"{self.__class__.__name__}(id={self.id}, created_date={self.entry_created_date}, properties={self.properties})"
     
+    def clone(self, **overrides):
+        """
+        Return a new instance of the same class, copying the properties.
+        Overrides can be provided to modify properties during the clone.
+        """
+        new_props = deepcopy(self.properties)
+        new_props.update(overrides)
+        old_date = getattr(self, 'date', None)
+        if old_date is not None and 'date' not in overrides:
+            new_props['date'] = old_date
+        return self.__class__(**new_props)
+
 
 
 

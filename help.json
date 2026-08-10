@@ -1,7 +1,7 @@
 {
   "General Overview": "This program manages hierarchical sample and processing data. You can define what types of samples or processing steps exist, how they relate, and track their properties over time.",
   "Creating & Managing Trees": "Click 'File -> New Tree' to start a new database, or 'File -> Load Tree(s)' to open existing ones. The app uses a unified multi-tree workspace, loading large files smoothly in the background. Use 'File -> Close Selected Trees' to close specific trees.",
-  "Managing Nodes": "Select a node in the tree and use the bottom panel to Create, Edit, or Copy nodes. Only permitted child types for the selected node will be available. The right panel displays the properties of the selected node.",
+  "Managing Nodes": "Select a node in the tree and use the bottom panel to Create, Edit, or Copy nodes. You can also use Ctrl+C to copy a node and Ctrl+V to paste it into multiple selected destinations. The right panel displays the properties of the selected node.",
   "Structure Browser": "Use 'Tools -> Structure Browser' to see how your database schema is structured. It shows classes, permitted children, and all required or custom properties.",
   "Adding New Structures": "Need a new sample type or processing step? Go to 'Advanced -> Add New Structure'. You can define a new class, required properties, and allowed parent/child relationships without writing code.",
   "Backup Settings": "Go to 'Settings -> Backup Settings' to set a secondary backup directory. Whenever you use 'File -> Save, Archive and Close', your databases and a monthly rolling backup of your configuration are saved locally and backed up to this folder.",

@@ -122,7 +122,13 @@ Place and run it from a working folder that contains (or can create) these along
    - choose a child class from allowed options
    - fill required/optional properties
    - click **Create Node**
-6. Save progress:
+6. Copy / Paste nodes:
+   - select a node to copy
+   - click **Copy Node** or press `Ctrl+C`
+   - select one or multiple destination nodes (using `Shift` or `Ctrl` click)
+   - click **Paste Node** or press `Ctrl+V`
+   - edit the properties for the pasted node and click **Paste**
+7. Save progress:
    - click **File -> Save Tree** for normal save
    - click **File -> Save, Archive and Close** to version it locally and copy it to your secondary backup folder. This also creates a monthly rolling backup of your `database_structure.json` schema!
 7. Load existing data:

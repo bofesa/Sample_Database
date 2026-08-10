@@ -129,7 +129,7 @@ class PropertyEditor(tk.Toplevel):
     BLANK_PROPERTY_KEY = ""
     NEW_PROPERTY_SENTINEL = "<New property...>"
 
-    def __init__(self, master, sample_class, existing_keys, required_props):
+    def __init__(self, master, sample_class, existing_keys, required_props, ok_text="OK"):
         super().__init__(master)
         self.title(f"Properties for {sample_class.__name__}")
         self.sample_class = sample_class
@@ -174,7 +174,7 @@ class PropertyEditor(tk.Toplevel):
 
         btn_frame = ttk.Frame(self)
         btn_frame.pack(pady=4)
-        ttk.Button(btn_frame, text="OK", command=self.on_ok).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text=ok_text, command=self.on_ok).pack(side="left", padx=5)
         ttk.Button(btn_frame, text="Cancel", command=self.on_cancel).pack(side="left", padx=5)
 
         self.add_optional_row()
@@ -485,6 +485,7 @@ class SampleTreeGUI:
         self.properties_panel = None
         self.properties_panel_tree = None
         self.unsaved_changes = set()
+        self.clipboard_node = None
         
         # Global Keyboard Shortcuts
         self.root.bind("<Control-f>", lambda e: self.search_property())
@@ -596,6 +597,8 @@ class SampleTreeGUI:
         paned_main.add(self.properties_panel, weight=2)
 
         self.treeview.bind("<<TreeviewSelect>>", self.on_select)
+        self.treeview.bind("<Control-c>", self.copy_to_clipboard)
+        self.treeview.bind("<Control-v>", self.paste_from_clipboard)
 
         # 1. Quick Access Top Bar
         top_bar = ttk.Frame(main)
@@ -633,7 +636,8 @@ class SampleTreeGUI:
         node_actions_frame = ttk.Frame(action_frame)
         node_actions_frame.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=2)
         ttk.Button(node_actions_frame, text="Edit Node", command=self.edit_node).pack(side="left", padx=(0, 4))
-        ttk.Button(node_actions_frame, text="Copy Node", command=self.copy_node).pack(side="left", padx=4)
+        self.copy_btn = ttk.Button(node_actions_frame, text="Copy Node", command=self.copy_to_clipboard)
+        self.copy_btn.pack(side="left", padx=4)
         ttk.Button(node_actions_frame, text="Delete Node", command=self.delete_node).pack(side="left", padx=4)
 
         # Row 2: Add Child section
@@ -998,8 +1002,8 @@ class SampleTreeGUI:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to open path: {e}", parent=self.root)
 
-    def copy_node(self):
-        """Copy the currently selected node to a new destination"""
+    def copy_to_clipboard(self, event=None):
+        """Copy the currently selected node to the internal clipboard"""
         ctx = self._selected_node_context()
         if not ctx:
             messagebox.showwarning("Select", "Select a node to copy first.")
@@ -1008,28 +1012,76 @@ class SampleTreeGUI:
         if ctx["is_system_root"]:
             messagebox.showwarning("Not Allowed", "Cannot copy the SYSTEM root node.")
             return
-        
-        tree_obj = ctx["tree"]
+            
         node = ctx["node"]
         obj = node.data.get("obj")
         if not obj:
             messagebox.showerror("Error", "Node has no object data.")
             return
-        
-        class_name = node.tag
+            
+        self.clipboard_node = obj
+        self.copy_btn.config(text="Paste Node", command=self.paste_from_clipboard)
+        self.refresh_status(f"Copied node {obj.id} to clipboard.")
+
+    def paste_from_clipboard(self, event=None):
+        """Paste the copied node into the selected destination(s)"""
+        if not self.clipboard_node:
+            messagebox.showwarning("Empty", "Clipboard is empty. Copy a node first.")
+            return
+            
+        selections = self.treeview.selection()
+        if not selections:
+            messagebox.showwarning("Select", "Select a destination parent node first.")
+            return
+            
+        class_name = self.clipboard_node.__class__.__name__
         classes = get_sample_classes()
         cls = classes.get(class_name)
         if not cls:
             messagebox.showerror("Error", f"Class {class_name} not found.")
             return
-        
+            
+        # Validate that all selected destinations can accept this child
+        destinations = []
+        for iid in selections:
+            payload = self.treeview_index.get(iid)
+            if not payload:
+                continue
+            system_key = payload["system_key"]
+            node_id = payload["node_id"]
+            tree = self.multi_trees[system_key]["tree"]
+            dest_node = tree.get_node(node_id)
+            
+            # Check if valid parent
+            if dest_node.tag == "SYSTEM":
+                destinations.append((tree, node_id, system_key))
+            else:
+                dest_obj = dest_node.data.get("obj")
+                if not dest_obj:
+                    continue
+                try:
+                    permitted = resolve_permitted_children(dest_obj)
+                    if class_name in permitted:
+                        destinations.append((tree, node_id, system_key))
+                except Exception:
+                    pass
+                    
+        if not destinations:
+            messagebox.showwarning("Invalid", "None of the selected nodes can accept this child type.")
+            return
+            
+        if len(destinations) < len(selections):
+            answer = messagebox.askyesno("Partial Match", "Some selected nodes cannot accept this child type. Paste into the valid ones only?")
+            if not answer:
+                return
+
         required, custom_props = get_class_schema(class_name)
-        
-        cur_props = obj.properties if isinstance(obj.properties, dict) else {}
+        cur_props = self.clipboard_node.properties if isinstance(self.clipboard_node.properties, dict) else {}
         
         # Open PropertyEditor with pre-filled values
         existing_keys = sorted(set(custom_props) | set(cur_props.keys()))
-        editor = PropertyEditor(self.root, cls, set(existing_keys), required)
+        editor = PropertyEditor(self.root, cls, set(existing_keys), required, ok_text="Paste")
+        
         try:
             for i, rp in enumerate(required):
                 if i < len(editor.rows):
@@ -1051,172 +1103,42 @@ class SampleTreeGUI:
                 opt_index += 1
         except Exception:
             pass
-        
+            
         self.root.wait_window(editor)
         if editor.result is None:
             return
-        
-        # Create dialog to select destination parent (tree view showing all nodes, greyed-out invalid parents)
-        class DestinationDialog(tk.Toplevel):
-            def __init__(self, master, child_cls, multi_trees=None):
-                super().__init__(master)
-                self.title("Select Destination Parent")
-                self.geometry("450x500")
-                self.result = None
-                self.child_cls = child_cls
-                self.multi_trees = multi_trees or {}
-                self.node_data = {}
-                self.valid_nodes = set()
-                self.ok_btn = None
-                
-                ttk.Label(self, text="Select destination parent:").pack(anchor="w", padx=10, pady=10)
-                
-                # Create treeview with scrollbar
-                tree_frame = ttk.Frame(self)
-                tree_frame.pack(fill="both", expand=True, padx=10, pady=5)
-                
-                self.treeview = ttk.Treeview(tree_frame)
-                self.treeview.pack(side="left", fill="both", expand=True)
-                
-                scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.treeview.yview)
-                scrollbar.pack(side="right", fill="y")
-                self.treeview.configure(yscrollcommand=scrollbar.set)
-                
-                # Configure tags for valid/invalid nodes
-                self.treeview.tag_configure("valid", foreground="black")
-                self.treeview.tag_configure("invalid", foreground="gray60")
-                
-                # Populate tree
-                self._populate_tree()
-                
-                # Bind selection event
-                self.treeview.bind("<<TreeviewSelect>>", self._on_select)
-                
-                btn_frame = ttk.Frame(self)
-                btn_frame.pack(pady=10)
-                self.ok_btn = ttk.Button(btn_frame, text="OK", command=self.on_ok, state="disabled")
-                self.ok_btn.pack(side="left", padx=5)
-                ttk.Button(btn_frame, text="Cancel", command=self.on_cancel).pack(side="left", padx=5)
             
-            def _can_parent(self, node, tree):
-                """Check if a node can accept the child class"""
-                if node.tag == "SYSTEM":
-                    return True
-                obj = node.data.get("obj")
-                if not obj:
-                    return False
-                try:
-                    permitted = resolve_permitted_children(obj)
-                    return self.child_cls.__name__ in permitted
-                except Exception:
-                    return False
-            
-            def _populate_tree(self):
-                """Populate tree showing all nodes across all open trees with valid parents highlighted"""
-                for system_key in sorted(self.multi_trees.keys()):
-                    info = self.multi_trees[system_key]
-                    tree = info["tree"]
-                    root_node = tree.get_node(tree.root)
-                    
-                    # Add system root
-                    is_valid = self._can_parent(root_node, tree)
-                    top_text = f"SYSTEM ({info.get('label', '')}) - {os.path.basename(info['file'])}"
-                    top_iid = f"SYS::{system_key}"
-                    tags = ("valid",) if is_valid else ("invalid",)
-                    
-                    self.treeview.insert("", "end", iid=top_iid, text=top_text, tags=tags)
-                    self.node_data[top_iid] = (tree, tree.root, system_key)
-                    
-                    if is_valid:
-                        self.valid_nodes.add(top_iid)
-                    
-                    # Add children recursively, regardless of parent validity
-                    def add_node(node_id, parent_iid):
-                        node = tree.get_node(node_id)
-                        if not node:
-                            return
-                        
-                        is_valid_node = self._can_parent(node, tree)
-                        text = self._node_display_text(node)
-                        iid = f"{top_iid}::{node_id}"
-                        tags = ("valid",) if is_valid_node else ("invalid",)
-                        
-                        self.treeview.insert(parent_iid, "end", iid=iid, text=text, tags=tags)
-                        self.node_data[iid] = (tree, node_id, system_key)
-                        
-                        if is_valid_node:
-                            self.valid_nodes.add(iid)
-                        
-                        for child in tree.children(node_id):
-                            add_node(child.identifier, iid)
-                    
-                    for child in tree.children(tree.root):
-                        add_node(child.identifier, top_iid)
-            
-            def _node_display_text(self, node):
-                """Get display text for a node"""
-                if node.tag == "SYSTEM":
-                    return f"SYSTEM ({node.data.get('Sample_System', '')})"
-                else:
-                    obj = node.data.get("obj")
-                    if obj:
-                        return f"{node.tag} [{obj.id}]"
-                    return node.tag
-            
-            def _on_select(self, _event):
-                """Enable/disable OK button based on selection validity"""
-                sel = self.treeview.selection()
-                if sel and sel[0] in self.valid_nodes:
-                    self.ok_btn.config(state="normal")
-                else:
-                    self.ok_btn.config(state="disabled")
-            
-            def on_ok(self):
-                sel = self.treeview.selection()
-                if not sel:
-                    messagebox.showwarning("Select", "Please select a destination.")
-                    return
-                
-                iid = sel[0]
-                if iid not in self.node_data or iid not in self.valid_nodes:
-                    messagebox.showwarning("Select", "Selected parent is not valid for this node type.")
-                    return
-                
-                self.result = self.node_data[iid]
-                self.destroy()
-            
-            def on_cancel(self):
-                self.destroy()
-        
-        # Create and show dialog
-        dest_dialog = DestinationDialog(self.root, cls, multi_trees=self.multi_trees)
-        self.root.wait_window(dest_dialog)
-        
-        if not dest_dialog.result:
-            return
-        
-        dest_info = dest_dialog.result
-        dest_tree, dest_parent_id, dest_system_key = dest_info
-        dest_ctx_system_key = dest_system_key
-        
-        # Create new node with same class and properties
         new_props = editor.result
-        try:
-            new_obj = cls(**new_props)
-            if hasattr(new_obj, "log_keys"):
-                new_obj.log_keys()
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to create new instance: {e}")
-            return
         
-        dest_tree.create_node(tag=class_name,
-                            identifier=new_obj.id,
-                            parent=dest_parent_id,
-                            data={"obj": new_obj})
+        # Paste into all valid destinations
+        systems_to_refresh = set()
+        last_new_obj = None
+        for dest_tree, dest_parent_id, dest_system_key in destinations:
+            try:
+                # Use clone to duplicate
+                new_obj = self.clipboard_node.clone(**new_props)
+                if hasattr(new_obj, "log_keys"):
+                    new_obj.log_keys()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to clone node: {e}")
+                continue
+                
+            dest_tree.create_node(tag=class_name,
+                                identifier=new_obj.id,
+                                parent=dest_parent_id,
+                                data={"obj": new_obj})
+            self.unsaved_changes.add(dest_system_key)
+            systems_to_refresh.add(dest_system_key)
+            last_new_obj = new_obj
+            
+        for system_key in systems_to_refresh:
+            self._refresh_after_tree_change(system_key=system_key, focus_node_id=last_new_obj.id if last_new_obj else None)
+            
+        self.refresh_status(f"Pasted {class_name} into {len(destinations)} destination(s).")
         
-        self._refresh_after_tree_change(system_key=dest_ctx_system_key, focus_node_id=new_obj.id)
-        self.unsaved_changes.add(dest_ctx_system_key)
-        self.refresh_status(f"Copied {class_name} node.")
+        # Reset copy button and clipboard
+        self.clipboard_node = None
+        self.copy_btn.config(text="Copy Node", command=self.copy_to_clipboard)
 
     def on_closing(self):
         if not getattr(self, "unsaved_changes", set()):
