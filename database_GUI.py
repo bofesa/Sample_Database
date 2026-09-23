@@ -169,15 +169,40 @@ class PropertyEditor(tk.Toplevel):
         self.opt_container.grid(row=r, column=0, columnspan=3, sticky="ew")
         r += 1
 
-        btn_add = ttk.Button(self.prop_frame, text="Add property row", command=self.add_optional_row)
-        btn_add.grid(row=r, column=0, sticky="w", pady=6)
+        self.btn_add = ttk.Button(self.prop_frame, text="Add property row", command=self.add_optional_row)
+        self.btn_add.grid(row=r, column=0, sticky="w", pady=6)
 
         btn_frame = ttk.Frame(self)
         btn_frame.pack(pady=4)
-        ttk.Button(btn_frame, text=ok_text, command=self.on_ok).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Cancel", command=self.on_cancel).pack(side="left", padx=5)
+        self.ok_btn = ttk.Button(btn_frame, text=ok_text, command=self.on_ok, default="active")
+        self.ok_btn.pack(side="left", padx=5)
+        self.cancel_btn = ttk.Button(btn_frame, text="Cancel", command=self.on_cancel)
+        self.cancel_btn.pack(side="left", padx=5)
 
         self.add_optional_row()
+
+        self.transient(master)
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+        self.lift()
+        self.focus_force()
+
+        self.bind("<Return>", self._handle_enter)
+        self.bind("<KP_Enter>", self._handle_enter)
+        self.bind("<Escape>", lambda event: self.on_cancel())
+        self.protocol("WM_DELETE_WINDOW", self.on_cancel)
+
+    def _handle_enter(self, event=None):
+        if event and event.widget == getattr(self, "cancel_btn", None):
+            self.on_cancel()
+            return "break"
+        if event and hasattr(self, "btn_add") and event.widget == self.btn_add:
+            self.add_optional_row()
+            return "break"
+        self.on_ok()
+        return "break"
 
     def optional_key_values(self):
         return [self.BLANK_PROPERTY_KEY] + self.existing_keys + [self.NEW_PROPERTY_SENTINEL]
@@ -208,7 +233,7 @@ class PropertyEditor(tk.Toplevel):
                     kv.set(self.BLANK_PROPERTY_KEY)
                     return
                 if new_key == self.NEW_PROPERTY_SENTINEL:
-                    messagebox.showerror("Invalid property", f"{self.NEW_PROPERTY_SENTINEL} is reserved for the new-property menu item.")
+                    messagebox.showerror("Invalid property", f"{self.NEW_PROPERTY_SENTINEL} is reserved for the new-property menu item.", parent=self)
                     kv.set(self.BLANK_PROPERTY_KEY)
                     return
                 if new_key not in self.existing_keys:
@@ -229,13 +254,13 @@ class PropertyEditor(tk.Toplevel):
             if not k or k == self.NEW_PROPERTY_SENTINEL:
                 continue
             if k in props:
-                messagebox.showerror("Error", f"Duplicate property key: {k}")
+                messagebox.showerror("Error", f"Duplicate property key: {k}", parent=self)
                 return
             props[k] = v
         # Validate required
         missing = [r for r in self.req if r not in props or props[r] == ""]
         if missing:
-            messagebox.showerror("Missing", f"Missing required properties: {', '.join(missing)}")
+            messagebox.showerror("Missing", f"Missing required properties: {', '.join(missing)}", parent=self)
             return
         self.result = props
         self.destroy()
@@ -593,6 +618,12 @@ class SampleTreeGUI:
         properties_sb.pack(side="right", fill="y")
         self.properties_panel_tree.pack(fill="both", expand=True)
         self.properties_panel_tree.bind("<Double-1>", self.on_property_double_click)
+        self.properties_panel_tree.bind("<Button-3>", self.on_properties_right_click)
+        self.properties_panel_tree.bind("<Button-2>", self.on_properties_right_click)
+        self.properties_panel_tree.bind("<Control-c>", self.copy_property_to_clipboard)
+        self.properties_panel_tree.bind("<Control-C>", self.copy_property_to_clipboard)
+        self.properties_panel_tree.bind("<Control-v>", self.paste_property_from_clipboard)
+        self.properties_panel_tree.bind("<Control-V>", self.paste_property_from_clipboard)
         
         paned_main.add(self.properties_panel, weight=2)
 
@@ -1002,6 +1033,249 @@ class SampleTreeGUI:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to open path: {e}", parent=self.root)
 
+    def _check_clipboard_text_for_property(self):
+        """
+        Validates clipboard content for pasting into a property field.
+        Returns: (is_valid: bool, text_or_error: str)
+        """
+        has_image = False
+        has_text = False
+        
+        # 1. Check Windows clipboard formats if available via ctypes
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            CF_TEXT = 1
+            CF_BITMAP = 2
+            CF_DIB = 8
+            CF_DIBV5 = 17
+            CF_TIFF = 6
+            CF_UNICODETEXT = 13
+            if user32.OpenClipboard(None):
+                try:
+                    has_text = bool(user32.IsClipboardFormatAvailable(CF_UNICODETEXT) or user32.IsClipboardFormatAvailable(CF_TEXT))
+                    has_image = bool(
+                        user32.IsClipboardFormatAvailable(CF_BITMAP) or
+                        user32.IsClipboardFormatAvailable(CF_DIB) or
+                        user32.IsClipboardFormatAvailable(CF_DIBV5) or
+                        user32.IsClipboardFormatAvailable(CF_TIFF)
+                    )
+                finally:
+                    user32.CloseClipboard()
+        except Exception:
+            pass
+
+        if not has_text and has_image:
+            return False, "Clipboard contains an image, not text. Cannot paste into a property field."
+
+        # 2. Retrieve text from Tkinter clipboard
+        try:
+            raw_text = self.root.clipboard_get()
+        except Exception:
+            if has_image:
+                return False, "Clipboard contains an image, not text. Cannot paste into a property field."
+            if self.clipboard_node is not None:
+                return False, "Clipboard contains a node from the app, not text. To paste the copied node, select a parent in the tree and use 'Paste Node' or Ctrl+V in the tree."
+            return False, "Clipboard is empty or does not contain valid text."
+
+        if not isinstance(raw_text, str) or not raw_text.strip():
+            return False, "Clipboard text is empty."
+
+        text = raw_text.strip("\r\n")
+
+        # 3. Verify it is NOT a node from the app
+        classes = get_sample_classes()
+        class_names = tuple(set(classes.keys()) | {"Sample", "Node"})
+        trimmed = text.strip()
+
+        # Check repr format, e.g. "Sample(id=...", "Annealing(id=...", "<Sample object...", etc.
+        if (trimmed.startswith(class_names) and any(m in trimmed for m in ("id=", "entry_created_date=", "properties="))) or \
+           (trimmed.startswith("<") and trimmed.endswith(">") and any(c in trimmed for c in class_names)):
+            return False, "Clipboard contains a node from the app, not property text. Cannot paste a node into a property field."
+
+        # Check JSON node format, e.g. {"entry_created_date": ..., "properties": ...} or {"tag": ..., "identifier": ...}
+        if trimmed.startswith("{") and trimmed.endswith("}"):
+            try:
+                data = json.loads(trimmed)
+                if isinstance(data, dict):
+                    if ("entry_created_date" in data and "properties" in data) or ("tag" in data and "identifier" in data):
+                        return False, "Clipboard contains node data from the app, not property text. Cannot paste a node into a property field."
+            except Exception:
+                pass
+
+        return True, text
+
+    def copy_property_to_clipboard(self, event=None):
+        """Copy the text value of the selected property in the Properties panel to the clipboard."""
+        item_id = self.properties_panel_tree.focus() or (self.properties_panel_tree.selection()[0] if self.properties_panel_tree.selection() else None)
+        if not item_id:
+            return "break"
+            
+        tags = self.properties_panel_tree.item(item_id, "tags") or ()
+        if "section_header" in tags:
+            return "break"
+            
+        values = self.properties_panel_tree.item(item_id, "values")
+        if not values or len(values) < 2:
+            return "break"
+            
+        prop_key = str(values[0])
+        if prop_key in ("No node selected", "Error"):
+            return "break"
+            
+        prop_val = str(values[1])
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(prop_val)
+            self.refresh_status(f"Copied property '{prop_key}' value to clipboard.")
+        except Exception as e:
+            messagebox.showerror("Copy Failed", f"Could not copy to clipboard: {e}", parent=self.root)
+            
+        return "break"
+
+    def copy_property_key_to_clipboard(self, event=None):
+        """Copy the property name/key to the clipboard."""
+        item_id = self.properties_panel_tree.focus() or (self.properties_panel_tree.selection()[0] if self.properties_panel_tree.selection() else None)
+        if not item_id:
+            return "break"
+        tags = self.properties_panel_tree.item(item_id, "tags") or ()
+        if "section_header" in tags:
+            return "break"
+        values = self.properties_panel_tree.item(item_id, "values")
+        if not values or len(values) < 1:
+            return "break"
+        prop_key = str(values[0])
+        if prop_key in ("No node selected", "Error", "Custom Properties"):
+            return "break"
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(prop_key)
+            self.refresh_status(f"Copied property name '{prop_key}' to clipboard.")
+        except Exception as e:
+            messagebox.showerror("Copy Failed", f"Could not copy to clipboard: {e}", parent=self.root)
+        return "break"
+
+    def paste_property_from_clipboard(self, event=None):
+        """Paste text from the clipboard into the selected property field in the Properties panel."""
+        item_id = self.properties_panel_tree.focus() or (self.properties_panel_tree.selection()[0] if self.properties_panel_tree.selection() else None)
+        if not item_id:
+            messagebox.showwarning("Select Field", "Select a property field to paste into.", parent=self.root)
+            return "break"
+
+        tags = self.properties_panel_tree.item(item_id, "tags") or ()
+        if "section_header" in tags:
+            messagebox.showwarning("Invalid Selection", "Cannot paste into a section header. Please select a property field.", parent=self.root)
+            return "break"
+
+        values = self.properties_panel_tree.item(item_id, "values")
+        if not values or len(values) < 2:
+            return "break"
+
+        prop_key = str(values[0])
+        read_only_keys = ("Type", "ID", "Created", "Sample System", "No node selected", "Error")
+        if prop_key in read_only_keys:
+            messagebox.showwarning("Read Only", f"'{prop_key}' is a system attribute and cannot be edited.", parent=self.root)
+            return "break"
+
+        # Check current selected node context
+        ctx = self._selected_node_context()
+        if not ctx or not ctx.get("node") or ctx.get("is_system_root"):
+            messagebox.showwarning("Cannot Edit", "Cannot edit properties for this node.", parent=self.root)
+            return "break"
+
+        node = ctx["node"]
+        obj = node.data.get("obj")
+        if not obj or not hasattr(obj, "properties") or not isinstance(obj.properties, dict):
+            messagebox.showwarning("Cannot Edit", "Node does not support custom properties.", parent=self.root)
+            return "break"
+
+        # Validate clipboard content
+        is_valid, text_or_err = self._check_clipboard_text_for_property()
+        if not is_valid:
+            messagebox.showwarning("Invalid Clipboard", text_or_err, parent=self.root)
+            return "break"
+
+        new_val = text_or_err
+
+        # Update the object property
+        try:
+            obj.properties[prop_key] = new_val
+            if prop_key == "date":
+                obj.date = new_val
+            if hasattr(obj, "log_keys"):
+                obj.log_keys()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to set property '{prop_key}': {e}", parent=self.root)
+            return "break"
+
+        # Update the treeview item display
+        tag_list = []
+        if new_val and isinstance(new_val, str) and os.path.exists(new_val):
+            tag_list.append("filepath")
+        self.properties_panel_tree.item(item_id, values=(prop_key, new_val), tags=tuple(tag_list))
+
+        # Update node text in main tree if applicable
+        try:
+            node_iid = self._get_treeview_iid(ctx["system_key"], ctx["node_id"])
+            if node_iid:
+                self.treeview.item(node_iid, text=self.node_text(node))
+        except Exception:
+            pass
+
+        # Mark unsaved changes and update status
+        self.unsaved_changes.add(ctx["system_key"])
+        self.refresh_status(f"Pasted text into property '{prop_key}'.")
+        return "break"
+
+    def on_properties_right_click(self, event):
+        """Show context menu on right click in the Properties panel."""
+        clicked_iid = self.properties_panel_tree.identify_row(event.y)
+        if clicked_iid:
+            self.properties_panel_tree.selection_set(clicked_iid)
+            self.properties_panel_tree.focus(clicked_iid)
+            
+        item_id = self.properties_panel_tree.focus() or (self.properties_panel_tree.selection()[0] if self.properties_panel_tree.selection() else None)
+        
+        menu = tk.Menu(self.root, tearoff=0)
+        
+        can_copy = False
+        can_paste = False
+        
+        if item_id:
+            tags = self.properties_panel_tree.item(item_id, "tags") or ()
+            if "section_header" not in tags:
+                values = self.properties_panel_tree.item(item_id, "values")
+                if values and len(values) >= 2:
+                    k = str(values[0])
+                    if k not in ("No node selected", "Error"):
+                        can_copy = True
+                        if k not in ("Type", "ID", "Created", "Sample System"):
+                            can_paste = True
+
+        menu.add_command(
+            label="Copy",
+            command=self.copy_property_to_clipboard,
+            accelerator="Ctrl+C",
+            state="normal" if can_copy else "disabled"
+        )
+        menu.add_command(
+            label="Paste",
+            command=self.paste_property_from_clipboard,
+            accelerator="Ctrl+V",
+            state="normal" if can_paste else "disabled"
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="Copy Property Name",
+            command=self.copy_property_key_to_clipboard,
+            state="normal" if can_copy else "disabled"
+        )
+        
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
     def copy_to_clipboard(self, event=None):
         """Copy the currently selected node to the internal clipboard"""
         ctx = self._selected_node_context()
@@ -1101,6 +1375,13 @@ class SampleTreeGUI:
                 kv.set(k)
                 vv.set(v)
                 opt_index += 1
+        except Exception:
+            pass
+            
+        try:
+            editor.lift()
+            editor.focus_force()
+            editor.ok_btn.focus_set()
         except Exception:
             pass
             

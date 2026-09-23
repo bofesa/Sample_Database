@@ -8,7 +8,9 @@
     "Processing_Step": {
         "base": "Sample",
         "required": [],
-        "custom": [],
+        "custom": [
+            "notes"
+        ],
         "permitted_children": []
     },
     "Wafer": {
@@ -36,7 +38,8 @@
             "process_pressure",
             "wafer_diameter",
             "current_mode",
-            "chamber"
+            "chamber",
+            "substrate_material"
         ],
         "permitted_children": [
             "Chip",
@@ -63,7 +66,10 @@
             "sputter_flow",
             "sputter_current",
             "date",
-            "deposition_pressure"
+            "deposition_pressure",
+            "location",
+            "shape",
+            "name"
         ],
         "permitted_children": [
             "SEM_stub",

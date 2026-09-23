@@ -26,7 +26,7 @@ if "%OUT_DIR%"=="" (
 echo.
 
 :: Build to a temporary distpath to avoid PyInstaller wiping the final directory
-python -m PyInstaller --noconfirm --onedir -w --icon=db.ico --distpath "pyinstaller_temp" database_explorer.py
+py -m PyInstaller --noconfirm --onedir -w --icon=db.ico --distpath "pyinstaller_temp" database_explorer.py
 
 echo.
 echo Updating application files in the output folder...
