@@ -13,6 +13,94 @@ from database_classes import BASE_DIR
 TREE_STORAGE_DIR = os.path.join(BASE_DIR, "databases")
 os.makedirs(TREE_STORAGE_DIR, exist_ok=True)
 
+def _get_project_candidate_dirs():
+    dirs = [TREE_STORAGE_DIR]
+    repo_db = os.path.abspath(os.path.join(BASE_DIR, "..", "..", "databases"))
+    if os.path.isdir(repo_db) and repo_db not in dirs:
+        dirs.append(repo_db)
+    parent_db = os.path.abspath(os.path.join(BASE_DIR, "..", "databases"))
+    if os.path.isdir(parent_db) and parent_db not in dirs:
+        dirs.append(parent_db)
+    return dirs
+
+def resolve_project_file(project_name):
+    """
+    Locates a database JSON file by direct path, project name, filename,
+    or root sample_system name across known storage directories.
+    """
+    if not project_name:
+        return None
+    # 1. Direct path or file check (absolute or relative to current working directory)
+    if os.path.isfile(project_name):
+        return os.path.abspath(project_name)
+
+    candidate_dirs = _get_project_candidate_dirs()
+
+    # 2. Check each candidate directory directly with and without .json extension
+    for c_dir in candidate_dirs:
+        candidate = os.path.join(c_dir, project_name)
+        if os.path.isfile(candidate):
+            return os.path.abspath(candidate)
+        if not project_name.lower().endswith(".json"):
+            candidate_json = os.path.join(c_dir, f"{project_name}.json")
+            if os.path.isfile(candidate_json):
+                return os.path.abspath(candidate_json)
+
+    # 3. Recursive search in candidate directories for matching file basename (case-insensitive)
+    for c_dir in candidate_dirs:
+        for root_dir, _, files in os.walk(c_dir):
+            for f in files:
+                if not f.lower().endswith(".json"):
+                    continue
+                base = os.path.splitext(f)[0]
+                if f.lower() == project_name.lower() or base.lower() == project_name.lower():
+                    return os.path.abspath(os.path.join(root_dir, f))
+
+    # 4. Search inside json files for matching root sample_system tag
+    for c_dir in candidate_dirs:
+        for root_dir, _, files in os.walk(c_dir):
+            for f in files:
+                if not f.lower().endswith(".json"):
+                    continue
+                path = os.path.join(root_dir, f)
+                try:
+                    with open(path, "r", encoding="utf-8") as jf:
+                        data = json.load(jf)
+                    sample_sys = data.get("root", {}).get("sample_system", "")
+                    if sample_sys and str(sample_sys).strip().lower() == str(project_name).strip().lower():
+                        return os.path.abspath(path)
+                except Exception:
+                    pass
+
+    return None
+
+def find_project_file_by_hexcode(hexcode):
+    """
+    Searches project JSON files in storage directories for any node or root matching the hexcode/ID.
+    """
+    if not hexcode:
+        return None
+    clean_hex = str(hexcode).strip().lower()
+    candidate_dirs = _get_project_candidate_dirs()
+    for c_dir in candidate_dirs:
+        for root_dir, _, files in os.walk(c_dir):
+            for f in files:
+                if not f.lower().endswith(".json"):
+                    continue
+                path = os.path.join(root_dir, f)
+                try:
+                    with open(path, "r", encoding="utf-8") as jf:
+                        data = json.load(jf)
+                    if str(data.get("root", {}).get("id", "")).strip().lower() == clean_hex:
+                        return os.path.abspath(path)
+                    for n in data.get("nodes", []):
+                        if str(n.get("id", "")).strip().lower() == clean_hex:
+                            return os.path.abspath(path)
+                except Exception:
+                    pass
+    return None
+
+
 # ---------- Icon handling & Toplevel defaults ----------
 
 def get_app_icon_path():
@@ -497,10 +585,11 @@ class StructureBrowser(tk.Toplevel):
         AddClassDialog(self, self)
 
 class SampleTreeGUI:
-    def __init__(self, root):
+    def __init__(self, root, initial_project=None, initial_hexcode=None):
         self.root = root
         self.root.title(f"Sample Tree Manager - {TREE_STORAGE_DIR}")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.initial_target_hexcode = initial_hexcode
         self.discover_btn = None
         self.multi_trees = {}
         self.treeview_index = {}
@@ -695,18 +784,51 @@ class SampleTreeGUI:
             cache = self.load_cache()
             self.auto_load_startup.set(cache.get("auto_load_startup", True))
             self.auto_expand_startup.set(cache.get("auto_expand_startup", True))
-            
-            if self.auto_load_startup.get():
-                last_trees = cache.get("last_trees", [])
-                
-                # backwards compatibility with old cache
-                if not last_trees and cache.get("last_tree"):
-                    last_trees = [cache.get("last_tree")]
-                    
-                valid_trees = [t for t in last_trees if os.path.exists(t)]
-                
-                if valid_trees:
-                    self._load_multiple_specific_trees(valid_trees)
+
+            trees_to_load = []
+
+            if initial_project:
+                proj_path = resolve_project_file(initial_project)
+                if proj_path:
+                    trees_to_load = [proj_path]
+                else:
+                    messagebox.showwarning("Project Not Found", f"Project '{initial_project}' could not be found.")
+
+            if not trees_to_load and initial_hexcode and not initial_project:
+                # If only hexcode was provided, see if it is in valid_trees from cache
+                # or if we can locate which project file contains it
+                cached_trees = cache.get("last_trees", [])
+                if not cached_trees and cache.get("last_tree"):
+                    cached_trees = [cache.get("last_tree")]
+                valid_cached = [t for t in cached_trees if os.path.exists(t)]
+
+                hex_proj = find_project_file_by_hexcode(initial_hexcode)
+                if hex_proj:
+                    if self.auto_load_startup.get() and valid_cached:
+                        if hex_proj not in valid_cached:
+                            trees_to_load = valid_cached + [hex_proj]
+                        else:
+                            trees_to_load = valid_cached
+                    else:
+                        trees_to_load = [hex_proj]
+                elif self.auto_load_startup.get() and valid_cached:
+                    trees_to_load = valid_cached
+
+            if not trees_to_load and not initial_project:
+                if self.auto_load_startup.get():
+                    last_trees = cache.get("last_trees", [])
+                    if not last_trees and cache.get("last_tree"):
+                        last_trees = [cache.get("last_tree")]
+                    valid_trees = [t for t in last_trees if os.path.exists(t)]
+                    if valid_trees:
+                        trees_to_load = valid_trees
+
+            if trees_to_load:
+                self._load_multiple_specific_trees(trees_to_load)
+            elif self.initial_target_hexcode:
+                target_hex = self.initial_target_hexcode
+                self.initial_target_hexcode = None
+                self.root.after_idle(lambda: self._select_and_highlight(target_hex))
         except Exception:
             pass
 
@@ -764,7 +886,8 @@ class SampleTreeGUI:
                     start_idx = len(self.multi_trees)
                     appended_count = 0
                     for i, (k, v) in enumerate(loaded.items()):
-                        existing = any(info["file"] == v["file"] for info in self.multi_trees.values())
+                        norm_v = os.path.normcase(os.path.normpath(v["file"]))
+                        existing = any(os.path.normcase(os.path.normpath(info["file"])) == norm_v for info in self.multi_trees.values())
                         if not existing:
                             new_key = f"{start_idx + i:04d}_{os.path.basename(v['file'])}"
                             self.multi_trees[new_key] = {key: val for key, val in v.items() if key != "sort_mode"}
@@ -791,9 +914,168 @@ class SampleTreeGUI:
                     
                     if failed:
                         messagebox.showwarning("Load Errors", "\n".join(failed))
+
+                    if getattr(self, "initial_target_hexcode", None):
+                        target_hex = self.initial_target_hexcode
+                        self.initial_target_hexcode = None
+                        self.root.after_idle(lambda: self._select_and_highlight(target_hex))
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to finalize load: {e}")
                     self.refresh_status("Ready")
+
+    def _select_and_highlight(self, hexcode_or_id):
+        found = self.select_node_by_id(hexcode_or_id)
+        if not found:
+            self.refresh_status(f"Sample hex code '{hexcode_or_id}' not found.")
+            messagebox.showwarning("Sample Not Found", f"Sample hex code '{hexcode_or_id}' was not found in the loaded database(s).")
+
+    def _safe_after(self, delay, func):
+        def wrapper():
+            try:
+                if hasattr(self, "root") and self.root.winfo_exists():
+                    func()
+            except Exception:
+                pass
+        try:
+            if hasattr(self, "root") and self.root.winfo_exists():
+                return self.root.after(delay, wrapper)
+        except Exception:
+            pass
+        return None
+
+    def _safe_see(self, iid):
+        try:
+            if hasattr(self, "treeview") and self.treeview.winfo_exists():
+                self.treeview.see(iid)
+        except Exception:
+            pass
+
+    def find_node_by_id(self, hexcode_or_id):
+        """
+        Finds a tree node and its system key matching the given hexcode or ID.
+        Checks exact match first, then case-insensitive.
+        """
+        if not hexcode_or_id:
+            return None, None
+        clean_hex = str(hexcode_or_id).strip()
+        for sk, s_info in self.multi_trees.items():
+            tree = s_info.get("tree")
+            if not tree:
+                continue
+            node = tree.get_node(clean_hex)
+            if node is not None:
+                return node, sk
+        for sk, s_info in self.multi_trees.items():
+            tree = s_info.get("tree")
+            if not tree:
+                continue
+            for node in tree.all_nodes():
+                if str(node.identifier).strip().lower() == clean_hex.lower():
+                    return node, sk
+        return None, None
+
+    def select_node_by_id(self, hexcode_or_id, system_key=None):
+        """
+        Finds a node by its hexcode / ID, expands its parent path,
+        scrolls to it, and selects it as if the user clicked on it.
+        """
+        if not hexcode_or_id:
+            return False
+
+        target_node = None
+        target_system_key = system_key
+
+        if target_system_key and target_system_key in self.multi_trees:
+            tree = self.multi_trees[target_system_key]["tree"]
+            node = tree.get_node(str(hexcode_or_id).strip())
+            if node is None:
+                for n in tree.all_nodes():
+                    if str(n.identifier).strip().lower() == str(hexcode_or_id).strip().lower():
+                        node = n
+                        break
+            if node is not None:
+                target_node = node
+
+        if not target_node:
+            target_node, target_system_key = self.find_node_by_id(hexcode_or_id)
+
+        if not target_node or not target_system_key:
+            return False
+
+        tree = self.multi_trees[target_system_key]["tree"]
+        node_id = target_node.identifier
+
+        # Build path from target to root
+        path = []
+        cur = node_id
+        while True:
+            node = tree.get_node(cur)
+            if node is None:
+                break
+            path.append(cur)
+            parent = tree.parent(cur)
+            if parent is None:
+                break
+            cur = parent.identifier
+
+        # Expand all ancestor nodes
+        for nid in reversed(path):
+            iid = self._get_treeview_iid(target_system_key, nid)
+            if not iid:
+                continue
+            try:
+                self.treeview.item(iid, open=True)
+            except Exception:
+                pass
+
+        target_iid = self._get_treeview_iid(target_system_key, node_id)
+        if target_iid:
+            try:
+                self.root.update_idletasks()
+                self.treeview.selection_set(target_iid)
+                self.treeview.focus(target_iid)
+                self.treeview.focus_set()
+                self.treeview.see(target_iid)
+                self.on_select(None)
+                # Re-apply see after brief delay in case layout shifts
+                self._safe_after(100, lambda: self._safe_see(target_iid))
+                return True
+            except Exception:
+                pass
+        return False
+
+    def load_tree_by_name(self, project_name, target_hexcode=None):
+        """
+        Loads a database project by name or path and optionally focuses a target hexcode node.
+        """
+        path = resolve_project_file(project_name)
+        if not path:
+            messagebox.showwarning("Project Not Found", f"Database project '{project_name}' could not be found.")
+            return False
+
+        if target_hexcode:
+            self.initial_target_hexcode = target_hexcode
+
+        # Check if already loaded
+        norm_path = os.path.normcase(os.path.normpath(path))
+        already_loaded_key = None
+        for sk, info in self.multi_trees.items():
+            if os.path.normcase(os.path.normpath(info.get("file", ""))) == norm_path:
+                already_loaded_key = sk
+                break
+
+        if already_loaded_key:
+            if target_hexcode:
+                self.initial_target_hexcode = None
+                self.select_node_by_id(target_hexcode, system_key=already_loaded_key)
+            return True
+
+        if self._loading_thread and self._loading_thread.is_alive():
+            # Already loading; the target_hexcode is queued and will be selected upon completion
+            return True
+
+        self._load_multiple_specific_trees([path])
+        return True
 
     def _load_multiple_specific_trees(self, filenames):
         if self._loading_thread and self._loading_thread.is_alive():
@@ -2663,36 +2945,7 @@ class SampleTreeGUI:
                 self.on_double_click_node(_event)
 
             def open_and_focus_node(self, system_key, node_id):
-                info = gui.multi_trees.get(system_key)
-                if not info:
-                    return
-                tree = info["tree"]
-                path = []
-                cur = node_id
-                while True:
-                    node = tree.get_node(cur)
-                    if node is None:
-                        break
-                    path.append(cur)
-                    parent = tree.parent(cur)
-                    if parent is None:
-                        break
-                    cur = parent.identifier
-                for nid in reversed(path):
-                    iid = gui._get_treeview_iid(system_key, nid)
-                    if not iid:
-                        continue
-                    try:
-                        self.treeview.item(iid, open=True)
-                    except Exception:
-                        pass
-                target_iid = gui._get_treeview_iid(system_key, node_id)
-                if target_iid:
-                    try:
-                        self.treeview.selection_set(target_iid)
-                        self.treeview.see(target_iid)
-                    except Exception:
-                        pass
+                gui.select_node_by_id(node_id, system_key)
 
 
 
@@ -2736,7 +2989,21 @@ def show_callback_exception(exc_type, exc_value, exc_traceback):
     dlg.focus_set()
 
 
-def launch_gui():
+def launch_gui(project=None, hexcode=None):
+    if project is None or hexcode is None:
+        try:
+            import argparse
+            parser = argparse.ArgumentParser(description="Sample Database Explorer", add_help=False)
+            parser.add_argument("-p", "--project", type=str, default=None, help="Database project name to activate")
+            parser.add_argument("-s", "--hexcode", "--sample", type=str, default=None, help="Sample hex node ID to select")
+            parsed_args, _ = parser.parse_known_args()
+            if project is None:
+                project = parsed_args.project
+            if hexcode is None:
+                hexcode = parsed_args.hexcode
+        except Exception:
+            pass
+
     root = tk.Tk()
     root.report_callback_exception = show_callback_exception
     icon_path = get_app_icon_path()
@@ -2753,9 +3020,10 @@ def launch_gui():
     # action = show_discover_properties_window(root)
     # if action == "discover":
     #     discover_required_properties()
-    _app = SampleTreeGUI(root)
+    _app = SampleTreeGUI(root, initial_project=project, initial_hexcode=hexcode)
     root.mainloop()
 
 
-# if __name__ == "__main__":
-#     launch_gui()
+if __name__ == "__main__":
+    launch_gui()
+

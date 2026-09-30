@@ -69,6 +69,13 @@ if exist "%FINAL_DIR%\database_structure.json" (
     echo  - [OK] database_structure.json copied successfully.
 )
 
+if exist "%FINAL_DIR%\databases" (
+    echo  - [SKIP] databases directory already exists.
+) else (
+    xcopy /E /Y /I "databases" "%FINAL_DIR%\databases\" >nul
+    echo  - [OK] databases directory copied successfully.
+)
+
 echo.
 echo Build complete! You can find the compiled application in:
 echo "%FINAL_DIR%"
