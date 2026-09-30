@@ -1,4 +1,5 @@
 from database_classes import *
+from database_lock import DatabaseFileLock, atomic_write_json, file_fingerprint
 from datetime import datetime
 import colorsys
 import threading
@@ -170,9 +171,7 @@ def serialize_tree(tree, filename, sort_mode=None):
                 "properties": obj.properties
             })
     data["nodes"] = nodes
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    return filename
+    return atomic_write_json(filename, data, indent=2)
 
 def get_class_schema(class_name):
     try:
@@ -728,8 +727,10 @@ class SampleTreeGUI:
         ttk.Button(top_bar, text="Collapse All", command=self.collapse_all_trees).pack(side="left", padx=2)
         ttk.Button(top_bar, text="Expand All", command=self.expand_all_trees).pack(side="left", padx=2)
         ttk.Button(top_bar, text="Search", command=self.search_property).pack(side="left", padx=2)
-        ttk.Button(top_bar, text="Save Tree", command=self.save_tree).pack(side="left", padx=2)
-        ttk.Button(top_bar, text="Save, Archive and Close", command=self._save_archive_and_close).pack(side="left", padx=2)
+        self.save_btn = ttk.Button(top_bar, text="Save Tree", command=self.save_tree)
+        self.save_btn.pack(side="left", padx=2)
+        self.save_archive_btn = ttk.Button(top_bar, text="Save, Archive and Close", command=self._save_archive_and_close)
+        self.save_archive_btn.pack(side="left", padx=2)
         
         # Hidden Rainbow Button for backward compatibility if needed by mode changes
         self.rainbow_active = False
@@ -755,10 +756,12 @@ class SampleTreeGUI:
         # Row 1: Node Actions (Edit, Copy, Delete)
         node_actions_frame = ttk.Frame(action_frame)
         node_actions_frame.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=2)
-        ttk.Button(node_actions_frame, text="Edit Node", command=self.edit_node).pack(side="left", padx=(0, 4))
+        self.edit_btn = ttk.Button(node_actions_frame, text="Edit Node", command=self.edit_node)
+        self.edit_btn.pack(side="left", padx=(0, 4))
         self.copy_btn = ttk.Button(node_actions_frame, text="Copy Node", command=self.copy_to_clipboard)
         self.copy_btn.pack(side="left", padx=4)
-        ttk.Button(node_actions_frame, text="Delete Node", command=self.delete_node).pack(side="left", padx=4)
+        self.delete_btn = ttk.Button(node_actions_frame, text="Delete Node", command=self.delete_node)
+        self.delete_btn.pack(side="left", padx=4)
 
         # Row 2: Add Child section
         child_frame = ttk.Frame(action_frame)
@@ -767,7 +770,8 @@ class SampleTreeGUI:
         self.class_var = tk.StringVar()
         self.class_cb = ttk.Combobox(child_frame, textvariable=self.class_var, width=28, state="readonly")
         self.class_cb.pack(side="left", padx=4)
-        ttk.Button(child_frame, text="Create Child Node", command=self.add_child_node).pack(side="left", padx=4)
+        self.create_child_btn = ttk.Button(child_frame, text="Create Child Node", command=self.add_child_node)
+        self.create_child_btn.pack(side="left", padx=4)
         
 
         # 5. Status Bar
@@ -779,6 +783,7 @@ class SampleTreeGUI:
         ttk.Label(status_frame, text=f"Workspace: {TREE_STORAGE_DIR}", relief="sunken", anchor="e").pack(side="right")
 
         self.refresh_status("Ready")
+        self._update_edit_controls(None)
 
         try:
             cache = self.load_cache()
@@ -842,13 +847,26 @@ class SampleTreeGUI:
         paths = [info["file"] for info in self.multi_trees.values()]
         self.save_cache({"last_trees": paths})
 
+    @staticmethod
+    def _load_tree_with_stable_fingerprint(path, attempts=3):
+        """Load a file only when its contents remain stable for the full read."""
+        for _attempt in range(attempts):
+            before = file_fingerprint(path)
+            tree = deserialize_tree(path)
+            after = file_fingerprint(path)
+            if before == after:
+                return tree, after
+        raise RuntimeError("The database changed repeatedly while it was being loaded.")
+
     def _thread_load_worker(self, filenames):
+        loaded = {}
         try:
-            loaded = {}
             failed = []
             for idx, path in enumerate(filenames):
+                database_lock = DatabaseFileLock(path)
                 try:
-                    tree = deserialize_tree(path)
+                    editable = database_lock.acquire()
+                    tree, fingerprint = self._load_tree_with_stable_fingerprint(path)
                     system_node = tree.get_node(tree.root)
                     system_name = system_node.data.get("Sample_System", "") if system_node else ""
                     sort_mode = system_node.data.get("sort_mode", "none") if system_node else "none"
@@ -857,12 +875,22 @@ class SampleTreeGUI:
                         "tree": tree,
                         "file": path,
                         "label": f"{system_name}" if system_name else os.path.basename(path),
-                        "sort_mode": sort_mode
+                        "sort_mode": sort_mode,
+                        "database_lock": database_lock if editable else None,
+                        "read_only": not editable,
+                        "read_only_reason": database_lock.reason if not editable else "",
+                        "lock_owner": database_lock.owner_metadata,
+                        "fingerprint": fingerprint,
                     }
                 except Exception as e:
+                    database_lock.release()
                     failed.append(f"{os.path.basename(path)}: {e}")
             self._thread_result = {"loaded": loaded, "failed": failed}
         except Exception as e:
+            for info in loaded.values():
+                lock = info.get("database_lock")
+                if lock:
+                    lock.release()
             self._thread_error = e
 
     def _poll_loading_status(self, dot_count, filenames):
@@ -885,6 +913,7 @@ class SampleTreeGUI:
 
                     start_idx = len(self.multi_trees)
                     appended_count = 0
+                    read_only_loaded = []
                     for i, (k, v) in enumerate(loaded.items()):
                         norm_v = os.path.normcase(os.path.normpath(v["file"]))
                         existing = any(os.path.normcase(os.path.normpath(info["file"])) == norm_v for info in self.multi_trees.values())
@@ -893,6 +922,12 @@ class SampleTreeGUI:
                             self.multi_trees[new_key] = {key: val for key, val in v.items() if key != "sort_mode"}
                             self.sort_state[new_key] = v["sort_mode"]
                             appended_count += 1
+                            if v.get("read_only"):
+                                read_only_loaded.append(self.multi_trees[new_key])
+                        else:
+                            lock = v.get("database_lock")
+                            if lock:
+                                lock.release()
                     
                     self.sort_var.set("none")
                     self.populate_treeview()
@@ -902,8 +937,6 @@ class SampleTreeGUI:
                     self.class_cb['values'] = []
                     self.class_var.set("")
                     self._hide_discover_button()
-                    if hasattr(self, 'unsaved_changes'):
-                        self.unsaved_changes.clear()
                     self.update_last_trees_cache()
                     
                     total_open = len(self.multi_trees)
@@ -914,12 +947,23 @@ class SampleTreeGUI:
                     
                     if failed:
                         messagebox.showwarning("Load Errors", "\n".join(failed))
+                    if read_only_loaded:
+                        self._show_read_only_warning(read_only_loaded)
 
                     if getattr(self, "initial_target_hexcode", None):
                         target_hex = self.initial_target_hexcode
                         self.initial_target_hexcode = None
                         self.root.after_idle(lambda: self._select_and_highlight(target_hex))
                 except Exception as e:
+                    active_locks = {
+                        id(info.get("database_lock"))
+                        for info in self.multi_trees.values()
+                        if info.get("database_lock")
+                    }
+                    for info in loaded.values():
+                        lock = info.get("database_lock")
+                        if lock and id(lock) not in active_locks:
+                            lock.release()
                     messagebox.showerror("Error", f"Failed to finalize load: {e}")
                     self.refresh_status("Ready")
 
@@ -1227,12 +1271,116 @@ class SampleTreeGUI:
     def refresh_status(self, msg):
         self.status_var.set(msg)
 
+    @staticmethod
+    def _owner_description(info):
+        owner = info.get("lock_owner") or {}
+        username = owner.get("username")
+        hostname = owner.get("hostname")
+        if username and hostname:
+            return f"{username} on {hostname}"
+        return username or hostname or "another application instance"
+
+    def _read_only_details(self, info):
+        owner = info.get("lock_owner") or {}
+        lines = [
+            info.get("file", "Unknown database"),
+            f"Opened by: {self._owner_description(info)}",
+        ]
+        if owner.get("opened_at"):
+            lines.append(f"Opened at: {owner['opened_at']}")
+        if owner.get("pid"):
+            lines.append(f"Process ID: {owner['pid']}")
+        if info.get("read_only_reason"):
+            lines.append(f"Reason: {info['read_only_reason']}")
+        return "\n".join(lines)
+
+    def _show_read_only_warning(self, tree_infos):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Databases Opened Read-Only")
+        dialog.geometry("760x420")
+        dialog.minsize(520, 260)
+        dialog.transient(self.root)
+
+        frame = ttk.Frame(dialog)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        ttk.Label(
+            frame,
+            text="Some databases could not be locked for editing and were loaded read-only.",
+            wraplength=720,
+        ).pack(anchor="w", pady=(0, 8))
+
+        text_frame = ttk.Frame(frame)
+        text_frame.pack(fill="both", expand=True)
+        details = "\n\n".join(self._read_only_details(info) for info in tree_infos)
+        text = tk.Text(text_frame, wrap="word", height=14)
+        text.insert("1.0", details)
+        text.configure(state="disabled")
+        text.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text.yview)
+        scrollbar.pack(side="right", fill="y")
+        text.configure(yscrollcommand=scrollbar.set)
+
+        ttk.Button(frame, text="OK", command=dialog.destroy).pack(anchor="e", pady=(8, 0))
+        dialog.grab_set()
+        dialog.focus_set()
+
+    def _is_tree_writable(self, system_key):
+        info = self.multi_trees.get(system_key)
+        return bool(info and not info.get("read_only"))
+
+    def _ensure_tree_writable(self, system_key, action="modify this database"):
+        info = self.multi_trees.get(system_key)
+        if info and not info.get("read_only"):
+            return True
+        if info:
+            messagebox.showwarning(
+                "Read-Only Database",
+                f"Cannot {action}.\n\n{self._read_only_details(info)}\n\n"
+                "Close and reopen the database after the editing instance has closed it.",
+                parent=self.root,
+            )
+        return False
+
+    @staticmethod
+    def _release_tree_lock(info):
+        if not info:
+            return
+        database_lock = info.get("database_lock")
+        if database_lock:
+            database_lock.release()
+        info["database_lock"] = None
+
+    def _mark_tree_read_only(self, system_key, reason):
+        info = self.multi_trees.get(system_key)
+        if not info:
+            return
+        self._release_tree_lock(info)
+        info["read_only"] = True
+        info["read_only_reason"] = reason
+        info["lock_owner"] = {}
+        self.populate_treeview()
+
+    def _update_edit_controls(self, ctx):
+        writable = bool(ctx and self._is_tree_writable(ctx["system_key"]))
+        editable_node = writable and not ctx.get("is_system_root", False) if ctx else False
+        self.edit_btn.configure(state="normal" if editable_node else "disabled")
+        self.delete_btn.configure(state="normal" if editable_node else "disabled")
+        self.create_child_btn.configure(state="normal" if writable else "disabled")
+        self.class_cb.configure(state="readonly" if writable else "disabled")
+
+        if self.clipboard_node is None:
+            copy_allowed = bool(ctx and not ctx.get("is_system_root", False))
+        else:
+            copy_allowed = writable
+        self.copy_btn.configure(state="normal" if copy_allowed else "disabled")
+
     def on_sort_changed(self):
         """Called when sort mode changes"""
         states = self._get_open_states()
         for system_key in self.multi_trees.keys():
             self.sort_state[system_key] = self.sort_var.get()
-            self.unsaved_changes.add(system_key)
+            if self._is_tree_writable(system_key):
+                self.unsaved_changes.add(system_key)
         self.populate_treeview(restore_states=states)
 
     def get_sort_children(self, tree, parent_id, sort_mode="none"):
@@ -1268,6 +1416,14 @@ class SampleTreeGUI:
         if node.tag == "SYSTEM":
             self.properties_panel_tree.insert("", "end", values=("Type", "System Root"))
             self.properties_panel_tree.insert("", "end", values=("Sample System", node.data.get("Sample_System", "")))
+            info = self.multi_trees.get(ctx.get("system_key"), {})
+            access = "Read-only" if info.get("read_only") else "Editable"
+            self.properties_panel_tree.insert("", "end", values=("Access", access))
+            if info.get("read_only"):
+                self.properties_panel_tree.insert("", "end", values=("Opened by", self._owner_description(info)))
+                opened_at = (info.get("lock_owner") or {}).get("opened_at")
+                if opened_at:
+                    self.properties_panel_tree.insert("", "end", values=("Opened at", opened_at))
             return
         
         try:
@@ -1454,7 +1610,10 @@ class SampleTreeGUI:
             return "break"
 
         prop_key = str(values[0])
-        read_only_keys = ("Type", "ID", "Created", "Sample System", "No node selected", "Error")
+        read_only_keys = (
+            "Type", "ID", "Created", "Sample System", "Access", "Opened by", "Opened at",
+            "No node selected", "Error",
+        )
         if prop_key in read_only_keys:
             messagebox.showwarning("Read Only", f"'{prop_key}' is a system attribute and cannot be edited.", parent=self.root)
             return "break"
@@ -1463,6 +1622,8 @@ class SampleTreeGUI:
         ctx = self._selected_node_context()
         if not ctx or not ctx.get("node") or ctx.get("is_system_root"):
             messagebox.showwarning("Cannot Edit", "Cannot edit properties for this node.", parent=self.root)
+            return "break"
+        if not self._ensure_tree_writable(ctx["system_key"], "paste into this property"):
             return "break"
 
         node = ctx["node"]
@@ -1531,7 +1692,9 @@ class SampleTreeGUI:
                     k = str(values[0])
                     if k not in ("No node selected", "Error"):
                         can_copy = True
-                        if k not in ("Type", "ID", "Created", "Sample System"):
+                        ctx = self._selected_node_context()
+                        if k not in ("Type", "ID", "Created", "Sample System", "Access", "Opened by", "Opened at") and \
+                                ctx and self._is_tree_writable(ctx["system_key"]):
                             can_paste = True
 
         menu.add_command(
@@ -1577,6 +1740,7 @@ class SampleTreeGUI:
             
         self.clipboard_node = obj
         self.copy_btn.config(text="Paste Node", command=self.paste_from_clipboard)
+        self._update_edit_controls(ctx)
         self.refresh_status(f"Copied node {obj.id} to clipboard.")
 
     def paste_from_clipboard(self, event=None):
@@ -1599,11 +1763,15 @@ class SampleTreeGUI:
             
         # Validate that all selected destinations can accept this child
         destinations = []
+        read_only_destinations = 0
         for iid in selections:
             payload = self.treeview_index.get(iid)
             if not payload:
                 continue
             system_key = payload["system_key"]
+            if not self._is_tree_writable(system_key):
+                read_only_destinations += 1
+                continue
             node_id = payload["node_id"]
             tree = self.multi_trees[system_key]["tree"]
             dest_node = tree.get_node(node_id)
@@ -1623,11 +1791,17 @@ class SampleTreeGUI:
                     pass
                     
         if not destinations:
-            messagebox.showwarning("Invalid", "None of the selected nodes can accept this child type.")
+            if read_only_destinations:
+                messagebox.showwarning("Read-Only Database", "The selected destination database is read-only.")
+            else:
+                messagebox.showwarning("Invalid", "None of the selected nodes can accept this child type.")
             return
             
         if len(destinations) < len(selections):
-            answer = messagebox.askyesno("Partial Match", "Some selected nodes cannot accept this child type. Paste into the valid ones only?")
+            detail = "Some selected nodes cannot accept this child type."
+            if read_only_destinations:
+                detail += f" {read_only_destinations} destination(s) are read-only."
+            answer = messagebox.askyesno("Partial Match", f"{detail} Paste into the writable valid ones only?")
             if not answer:
                 return
 
@@ -1702,21 +1876,25 @@ class SampleTreeGUI:
         # Reset copy button and clipboard
         self.clipboard_node = None
         self.copy_btn.config(text="Copy Node", command=self.copy_to_clipboard)
+        self._update_edit_controls(self._selected_node_context())
 
     def on_closing(self):
         if not getattr(self, "unsaved_changes", set()):
+            self._release_all_tree_locks()
             self.root.destroy()
             return
         answer = messagebox.askyesnocancel("Quit", "You have unsaved changes. 'Yes' to save and archive them, or 'No' to discard.")
         if answer is True:  # Yes
-            self._save_archive_and_close(all_unsaved=True)
-            self.root.destroy()
+            if self._save_archive_and_close(all_unsaved=True):
+                self.root.destroy()
         elif answer is False:  # No
+            self._release_all_tree_locks()
             self.root.destroy()
         else:  # Cancel
             pass
 
     def _clear_workspace(self):
+        self._release_all_tree_locks()
         self.multi_trees = {}
         self.treeview_index = {}
         self.treeview_system_iids = {}
@@ -1728,6 +1906,10 @@ class SampleTreeGUI:
         if hasattr(self, 'unsaved_changes'):
             self.unsaved_changes.clear()
         self.update_last_trees_cache()
+
+    def _release_all_tree_locks(self):
+        for info in getattr(self, "multi_trees", {}).values():
+            self._release_tree_lock(info)
 
     def _selected_node_context(self):
         sel = self.treeview.selection()
@@ -1753,6 +1935,8 @@ class SampleTreeGUI:
             "node_id": node_id,
             "system_key": system_key,
             "file": system_info["file"],
+            "read_only": system_info.get("read_only", False),
+            "lock_owner": system_info.get("lock_owner", {}),
             "is_system_root": node_id == tree.root,
             "tv_iid": tv_iid,
         }
@@ -1812,6 +1996,26 @@ class SampleTreeGUI:
         )
         if not filename:
             return
+
+        normalized = os.path.normcase(os.path.abspath(filename))
+        if any(os.path.normcase(os.path.abspath(info.get("file", ""))) == normalized for info in self.multi_trees.values()):
+            messagebox.showwarning("Already Open", "That database is already open in this application.", parent=self.root)
+            return
+
+        database_lock = DatabaseFileLock(filename)
+        if not database_lock.acquire():
+            lock_info = {
+                "file": filename,
+                "lock_owner": database_lock.owner_metadata,
+                "read_only_reason": database_lock.reason,
+            }
+            messagebox.showwarning(
+                "Cannot Create Database",
+                "The selected file cannot be opened for editing. It was not overwritten.\n\n"
+                + self._read_only_details(lock_info),
+                parent=self.root,
+            )
+            return
             
         import treelib
         import json
@@ -1824,14 +2028,28 @@ class SampleTreeGUI:
             data={"Sample_System": sample_system, "sort_mode": "none"}
         )
             
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump({"root": {"id": "SYSTEM", "sample_system": sample_system}, "nodes": []}, f, indent=2)
+        try:
+            atomic_write_json(
+                filename,
+                {"root": {"id": "SYSTEM", "sample_system": sample_system}, "nodes": []},
+                indent=2,
+            )
+            fingerprint = file_fingerprint(filename)
+        except Exception as exc:
+            database_lock.release()
+            messagebox.showerror("Error", f"Failed to create database: {exc}", parent=self.root)
+            return
             
         key = f"{len(self.multi_trees):04d}_{os.path.basename(filename)}"
         self.multi_trees[key] = {
             "tree": tree,
             "file": filename,
-            "label": sample_system if sample_system else os.path.basename(filename)
+            "label": sample_system if sample_system else os.path.basename(filename),
+            "database_lock": database_lock,
+            "read_only": False,
+            "read_only_reason": "",
+            "lock_owner": database_lock.owner_metadata,
+            "fingerprint": fingerprint,
         }
         self.sort_state[key] = "none"
         
@@ -1925,7 +2143,8 @@ class SampleTreeGUI:
                         tree = info["tree"]
                         filepath = info["file"]
                         sort_mode = self.sort_state.get(system_key, "none")
-                        serialize_tree(tree, filepath, sort_mode=sort_mode)
+                        if not self._save_system(system_key):
+                            return
                         
                         archive_dir = os.path.join(os.path.dirname(filepath) if filepath else TREE_STORAGE_DIR, "archive")
                         os.makedirs(archive_dir, exist_ok=True)
@@ -1940,6 +2159,7 @@ class SampleTreeGUI:
                         messagebox.showerror("Error", f"Failed to save/archive tree: {e}")
                         return
 
+            self._release_tree_lock(info)
             del self.multi_trees[system_key]
             if system_key in self.sort_state:
                 del self.sort_state[system_key]
@@ -2048,6 +2268,64 @@ class SampleTreeGUI:
         else:
             messagebox.showinfo("Import Complete", "Legacy keys merged successfully into existing structure.")
             
+    def _save_system(self, system_key):
+        info = self.multi_trees.get(system_key)
+        if not info:
+            return False
+        if not self._ensure_tree_writable(system_key, "save this database"):
+            return False
+
+        database_lock = info.get("database_lock")
+        if not database_lock or not database_lock.is_owned():
+            reason = "The application no longer owns this database's edit lock."
+            self._mark_tree_read_only(system_key, reason)
+            messagebox.showerror(
+                "Database Lock Lost",
+                f"{os.path.basename(info['file'])} was not saved.\n\n{reason}\n"
+                "Your in-memory changes have been retained, but this tree is now read-only.",
+                parent=self.root,
+            )
+            return False
+
+        try:
+            current_fingerprint = file_fingerprint(info["file"])
+        except Exception as exc:
+            messagebox.showerror(
+                "Save Conflict",
+                f"Could not verify {os.path.basename(info['file'])} before saving:\n{exc}\n\n"
+                "The database was not overwritten.",
+                parent=self.root,
+            )
+            return False
+
+        if current_fingerprint != info.get("fingerprint"):
+            reason = "The database file changed on disk after it was loaded."
+            self._mark_tree_read_only(system_key, reason)
+            messagebox.showerror(
+                "Save Conflict",
+                f"{os.path.basename(info['file'])} was modified outside this application.\n\n"
+                "The database was not overwritten. Your in-memory changes remain visible, "
+                "but the tree is now read-only; close and reopen it to load the disk version.",
+                parent=self.root,
+            )
+            return False
+
+        try:
+            sort_mode = self.sort_state.get(system_key, "none")
+            serialize_tree(info["tree"], info["file"], sort_mode=sort_mode)
+            info["fingerprint"] = file_fingerprint(info["file"])
+        except Exception as exc:
+            messagebox.showerror(
+                "Save Failed",
+                f"Failed to save {os.path.basename(info['file'])}:\n{exc}\n\n"
+                "The previous database file was left intact.",
+                parent=self.root,
+            )
+            return False
+
+        self.unsaved_changes.discard(system_key)
+        return True
+
     def save_tree(self, all_unsaved=False):
         if not self.multi_trees:
             messagebox.showwarning("Save", "No trees to save.")
@@ -2056,7 +2334,8 @@ class SampleTreeGUI:
         unsaved = getattr(self, "unsaved_changes", set())
         
         if all_unsaved:
-            systems_to_save = unsaved.copy()
+            systems_to_save = {key for key in unsaved if key in self.multi_trees}
+            selected_systems = set(self.multi_trees)
         else:
             selected_systems = self._get_selected_systems()
             if not selected_systems:
@@ -2065,20 +2344,27 @@ class SampleTreeGUI:
             systems_to_save = selected_systems.intersection(unsaved)
             
         if not systems_to_save:
-            self.refresh_status("No unsaved changes to save in the selected tree(s).")
+            read_only_count = sum(
+                1 for key in selected_systems
+                if self.multi_trees.get(key, {}).get("read_only")
+            )
+            if read_only_count:
+                self.refresh_status("Selected read-only tree(s) cannot be saved; there are no writable unsaved changes.")
+            else:
+                self.refresh_status("No unsaved changes to save in the selected tree(s).")
             return set()
             
-        saved = 0
+        saved_systems = set()
         for system_key in list(systems_to_save):
-            if system_key in self.multi_trees:
-                info = self.multi_trees[system_key]
-                sort_mode = self.sort_state.get(system_key, "none")
-                serialize_tree(info["tree"], info["file"], sort_mode=sort_mode)
-                saved += 1
-                self.unsaved_changes.discard(system_key)
+            if self._save_system(system_key):
+                saved_systems.add(system_key)
                 
-        self.refresh_status(f"Saved {saved} tree(s).")
-        return systems_to_save
+        failed = len(systems_to_save) - len(saved_systems)
+        if failed:
+            self.refresh_status(f"Saved {len(saved_systems)} tree(s); {failed} tree(s) were not saved.")
+        else:
+            self.refresh_status(f"Saved {len(saved_systems)} tree(s).")
+        return saved_systems
     
     # ---------- Discover Required Properties Option (integrated into GUI) ----------
     def _on_discover_click(self):
@@ -2175,6 +2461,7 @@ class SampleTreeGUI:
 
         try:
             self.treeview.tag_configure("system_child", foreground="red")
+            self.treeview.tag_configure("read_only", foreground="#666666")
         except Exception:
             pass
 
@@ -2190,6 +2477,8 @@ class SampleTreeGUI:
             top_text = f"{self.node_text(root_node)} - {os.path.basename(info['file'])}"
             if root_node and root_node.data.get("Sample_System"):
                 top_text = f"SYSTEM ({display_name}) - {os.path.basename(info['file'])}"
+            if info.get("read_only"):
+                top_text += " [READ-ONLY]"
             top_tags = ()
             if self.rainbow_active:
                 top_color_tag = "rainbow_0"
@@ -2198,6 +2487,8 @@ class SampleTreeGUI:
                     self.treeview.tag_configure(top_color_tag, foreground=self.rainbow_colours()[0])
                 except Exception:
                     pass
+            elif info.get("read_only"):
+                top_tags = ("read_only",)
             self.treeview.insert("", "end", iid=top_iid, text=top_text, tags=top_tags)
             
             if top_iid in restore_states:
@@ -2322,6 +2613,8 @@ class SampleTreeGUI:
         if not ctx:
             messagebox.showwarning("Select", "Select a node first.")
             return
+        if not self._ensure_tree_writable(ctx["system_key"], "edit this node"):
+            return
         node_id = ctx["node_id"]
         node = ctx["node"]
         tree_obj = ctx["tree"]
@@ -2394,9 +2687,19 @@ class SampleTreeGUI:
         self.refresh_status(f"Edited {class_name} node in {os.path.basename(ctx['file'])}.")
 
     def _save_archive_and_close(self, all_unsaved=False):
+        if not self.multi_trees:
+            return True
+
+        close_candidates = set(self.multi_trees) if all_unsaved else self._get_selected_systems()
+        if not close_candidates:
+            messagebox.showwarning("Close Trees", "No tree selected.", parent=self.root)
+            return False
+        dirty_candidates = close_candidates.intersection(self.unsaved_changes)
         saved_systems = self.save_tree(all_unsaved=all_unsaved)
         if saved_systems is None:
-            return
+            return False
+        if dirty_candidates.difference(saved_systems):
+            return False
             
         # Monthly rolling backup of database_structure.json
         try:
@@ -2420,9 +2723,6 @@ class SampleTreeGUI:
         except Exception:
             pass
             
-        if not self.multi_trees:
-            return
-            
         archive_dir = os.path.join(TREE_STORAGE_DIR, "archive")
         os.makedirs(archive_dir, exist_ok=True)
         ts = datetime.now().strftime("%y%m%d")
@@ -2441,18 +2741,19 @@ class SampleTreeGUI:
             if all_unsaved:
                 self._clear_workspace()
             else:
-                selected = self._get_selected_systems()
-                for system_key in list(selected):
+                for system_key in list(close_candidates):
                     if system_key in self.multi_trees:
+                        self._release_tree_lock(self.multi_trees[system_key])
                         del self.multi_trees[system_key]
                     if system_key in self.sort_state:
                         del self.sort_state[system_key]
                     self.unsaved_changes.discard(system_key)
                 self.populate_treeview()
             self.refresh_status("Ready")
+            return True
         except Exception as e:
             messagebox.showerror("Error", f"Failed to archive trees: {e}")
-            messagebox.showerror("Error", f"Failed to close tree: {e}")
+            return False
 
     def on_select(self, _event):
         ctx = self._selected_node_context()
@@ -2461,12 +2762,16 @@ class SampleTreeGUI:
             self.class_cb['values'] = []
             self.class_var.set("")
             self.update_properties_panel(None)
+            self._update_edit_controls(None)
             return
         tree_name = os.path.splitext(os.path.basename(ctx['file']))[0]
         parent_label = f"{tree_name}: {ctx['node_id']}"
+        if self.multi_trees.get(ctx["system_key"], {}).get("read_only"):
+            parent_label += " [READ-ONLY]"
         self.parent_label_var.set(parent_label)
         self.populate_child_class_options(ctx["tree"], ctx["node_id"])
         self.update_properties_panel(ctx)
+        self._update_edit_controls(ctx)
 
     def populate_child_class_options(self, tree_obj, parent_id):
         if parent_id == tree_obj.root:
@@ -2489,6 +2794,8 @@ class SampleTreeGUI:
         ctx = self._selected_node_context()
         if not ctx:
             messagebox.showwarning("Select", "Select a parent node first.")
+            return
+        if not self._ensure_tree_writable(ctx["system_key"], "create a child node"):
             return
         tree_obj = ctx["tree"]
         parent_id = ctx["node_id"]
@@ -2543,6 +2850,8 @@ class SampleTreeGUI:
         ctx = self._selected_node_context()
         if not ctx:
             messagebox.showwarning("Select", "Select a node to delete first.")
+            return
+        if not self._ensure_tree_writable(ctx["system_key"], "delete this node"):
             return
 
         if ctx["is_system_root"]:
