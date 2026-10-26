@@ -1,4 +1,7 @@
 {
+    "__settings__": {
+        "id_total_length": 6
+    },
     "Sample": {
         "base": null,
         "required": [],

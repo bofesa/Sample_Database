@@ -1,5 +1,13 @@
 from database_classes import *
 from database_lock import DatabaseFileLock, atomic_write_json, file_fingerprint
+from id_policy import (
+    MAX_ID_TOTAL_LENGTH,
+    MIN_ID_TOTAL_LENGTH,
+    collision_probability,
+    generate_unique_id,
+    recommend_total_length,
+    validate_id_total_length,
+)
 from datetime import datetime
 import colorsys
 import threading
@@ -175,8 +183,7 @@ def serialize_tree(tree, filename, sort_mode=None):
 
 def get_class_schema(class_name):
     try:
-        with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
-            schema = json.load(f)
+        schema = load_database_structure()
         cls_schema = schema.get(class_name, {"required": [], "custom": []})
         return cls_schema.get("required", []), cls_schema.get("custom", [])
     except Exception:
@@ -216,7 +223,8 @@ class PropertyEditor(tk.Toplevel):
     BLANK_PROPERTY_KEY = ""
     NEW_PROPERTY_SENTINEL = "<New property...>"
 
-    def __init__(self, master, sample_class, existing_keys, required_props, ok_text="OK"):
+    def __init__(self, master, sample_class, existing_keys, required_props, ok_text="OK",
+                 initial_properties=None):
         super().__init__(master)
         self.title(f"Properties for {sample_class.__name__}")
         self.sample_class = sample_class
@@ -267,6 +275,18 @@ class PropertyEditor(tk.Toplevel):
         self.cancel_btn.pack(side="left", padx=5)
 
         self.add_optional_row()
+        initial_properties = dict(initial_properties or {})
+        required_rows = {key.get(): value for key, value, _widget in self.rows}
+        for key, value in initial_properties.items():
+            if key in required_rows:
+                required_rows[key].set(str(value))
+                continue
+            blank = next(((key_var, value_var) for key_var, value_var, _widget in self.rows
+                          if not key_var.get()), None)
+            if blank is None:
+                blank = self.add_optional_row()
+            blank[0].set(str(key))
+            blank[1].set(str(value))
 
         self.transient(master)
         try:
@@ -331,6 +351,7 @@ class PropertyEditor(tk.Toplevel):
 
         cb.bind("<<ComboboxSelected>>", on_select)
         self.rows.append((kv, vv, cb))
+        return kv, vv
 
     def on_ok(self):
         props = {}
@@ -399,9 +420,8 @@ class AddClassDialog(tk.Toplevel):
 
         # Populate children list
         import json
-        with open(DATABASE_STRUCTURE_FILE, "r", encoding="utf-8") as f:
-            self.schema = json.load(f)
-        classes = sorted([c for c in self.schema.keys() if c not in ['Sample', 'Processing_Step']])
+        self.schema = load_database_structure()
+        classes = sorted([c for c in schema_class_names(self.schema) if c not in ['Sample', 'Processing_Step']])
         for c in classes:
             self.children_list.insert(tk.END, c)
             self.parents_list.insert(tk.END, c)
@@ -428,24 +448,34 @@ class AddClassDialog(tk.Toplevel):
         if not name.isidentifier():
             messagebox.showwarning("Input Error", "Class name must be a valid identifier (no spaces).")
             return
+        if name.startswith("__"):
+            messagebox.showwarning("Input Error", "Class names beginning with '__' are reserved.")
+            return
         if name in self.schema:
             messagebox.showwarning("Input Error", "Class already exists.")
             return
 
-        self.schema[name] = {
-            "base": base,
-            "required": reqs,
-            "custom": [],
-            "permitted_children": perm_children
-        }
-        
-        for parent in perm_parents:
-            if name not in self.schema[parent].get("permitted_children", []):
-                self.schema[parent].setdefault("permitted_children", []).append(name)
+        def apply(schema):
+            if name in schema:
+                raise ValueError(f"Class {name} already exists.")
+            schema[name] = {
+                "base": base,
+                "required": reqs,
+                "custom": [],
+                "permitted_children": perm_children,
+            }
+            for parent in perm_parents:
+                if parent not in schema:
+                    raise ValueError(f"Parent class {parent} no longer exists.")
+                if name not in schema[parent].get("permitted_children", []):
+                    schema[parent].setdefault("permitted_children", []).append(name)
 
-        import json
-        with open(DATABASE_STRUCTURE_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.schema, f, indent=4)
+        try:
+            update_database_structure(apply)
+            self.schema = load_database_structure()
+        except Exception as exc:
+            messagebox.showerror("Error", f"Failed to create class: {exc}", parent=self)
+            return
 
         import database_classes
         if hasattr(database_classes, "create_class_from_schema"):
@@ -514,8 +544,7 @@ class StructureBrowser(tk.Toplevel):
             
         import json
         try:
-            with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
-                schema = json.load(f)
+            schema = load_database_structure()
         except:
             schema = {}
             
@@ -524,7 +553,7 @@ class StructureBrowser(tk.Toplevel):
         self.tree.item(samp_iid, open=True)
         self.tree.item(proc_iid, open=True)
         
-        for name, config in schema.items():
+        for name, config in schema_class_items(schema):
             if name in ['Sample', 'Processing_Step']: continue
             base = config.get("base")
             if base == "Processing_Step":
@@ -543,8 +572,7 @@ class StructureBrowser(tk.Toplevel):
         self.perm_list.delete(0, tk.END)
         
         import json
-        with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
-            schema = json.load(f)
+        schema = load_database_structure()
             
         config = schema.get(cls_name, {})
         for r in config.get("required", []): self.req_list.insert(tk.END, r)
@@ -565,14 +593,17 @@ class StructureBrowser(tk.Toplevel):
         
         import json
         try:
-            with open(DATABASE_STRUCTURE_FILE, "r", encoding="utf-8") as f:
-                schema = json.load(f)
-                    
-            if new_prop not in schema[cls_name]["custom"] and new_prop not in schema[cls_name]["required"]:
-                schema[cls_name]["custom"].append(new_prop)
-                with open(DATABASE_STRUCTURE_FILE, "w", encoding="utf-8") as f:
-                    json.dump(schema, f, indent=4)
-                    
+            added = False
+            def apply(schema):
+                nonlocal added
+                if cls_name not in schema:
+                    raise ValueError(f"Class {cls_name} no longer exists.")
+                if new_prop not in schema[cls_name]["custom"] and new_prop not in schema[cls_name]["required"]:
+                    schema[cls_name]["custom"].append(new_prop)
+                    added = True
+            update_database_structure(apply)
+
+            if added:
                 self.cust_list.insert(tk.END, new_prop)
                 self.new_prop_var.set("")
             else:
@@ -584,11 +615,13 @@ class StructureBrowser(tk.Toplevel):
         AddClassDialog(self, self)
 
 class SampleTreeGUI:
-    def __init__(self, root, initial_project=None, initial_hexcode=None):
+    def __init__(self, root, initial_project=None, initial_hexcode=None,
+                 new_child_proposal=None):
         self.root = root
         self.root.title(f"Sample Tree Manager - {TREE_STORAGE_DIR}")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.initial_target_hexcode = initial_hexcode
+        self.initial_child_proposal = new_child_proposal
         self.discover_btn = None
         self.multi_trees = {}
         self.treeview_index = {}
@@ -641,6 +674,8 @@ class SampleTreeGUI:
         advanced_menu = tk.Menu(menubar, tearoff=0)
         advanced_menu.add_command(label="Add New Structure", command=lambda: AddClassDialog(self.root, None))
         advanced_menu.add_command(label="Import Legacy Keys", command=self.import_legacy_keys)
+        advanced_menu.add_separator()
+        advanced_menu.add_command(label="Identifier Settings", command=self.open_identifier_settings)
         
         # Settings Menu
         settings_menu = tk.Menu(menubar, tearoff=0)
@@ -972,6 +1007,10 @@ class SampleTreeGUI:
         if not found:
             self.refresh_status(f"Sample hex code '{hexcode_or_id}' not found.")
             messagebox.showwarning("Sample Not Found", f"Sample hex code '{hexcode_or_id}' was not found in the loaded database(s).")
+        elif self.initial_child_proposal:
+            proposal = self.initial_child_proposal
+            self.initial_child_proposal = None
+            self.root.after_idle(lambda: self.open_new_child_proposal(proposal))
 
     def _safe_after(self, delay, func):
         def wrapper():
@@ -1157,6 +1196,124 @@ class SampleTreeGUI:
         except Exception:
             pass
 
+    def open_identifier_settings(self):
+        try:
+            current_length = get_id_total_length()
+        except Exception as exc:
+            messagebox.showerror("Identifier Settings", f"Could not read the ID setting:\n{exc}", parent=self.root)
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Identifier Settings")
+        dialog.geometry("520x280")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog)
+        frame.pack(fill="both", expand=True, padx=12, pady=12)
+        frame.columnconfigure(1, weight=1)
+
+        length_var = tk.StringVar(value=str(current_length))
+        count_var = tk.StringVar(value="1000")
+        target_var = tk.StringVar(value="0.01")
+        sample_probability_var = tk.StringVar(value="-")
+        recommendation_var = tk.StringVar(value="-")
+
+        ttk.Label(frame, text="Current total length:").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Label(frame, text=str(current_length)).grid(row=0, column=1, sticky="w", pady=4)
+        ttk.Label(frame, text="Proposed total length:").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Spinbox(
+            frame,
+            from_=MIN_ID_TOTAL_LENGTH,
+            to=MAX_ID_TOTAL_LENGTH,
+            textvariable=length_var,
+            width=10,
+        ).grid(row=1, column=1, sticky="w", pady=4)
+        ttk.Label(frame, text="Anticipated nodes:").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=count_var, width=14).grid(row=2, column=1, sticky="w", pady=4)
+        ttk.Label(frame, text="Maximum collision probability (%):").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=target_var, width=14).grid(row=3, column=1, sticky="w", pady=4)
+
+        ttk.Separator(frame).grid(row=4, column=0, columnspan=2, sticky="ew", pady=8)
+        ttk.Label(frame, text="Sample collision probability:").grid(row=5, column=0, sticky="w", pady=3)
+        ttk.Label(frame, textvariable=sample_probability_var).grid(row=5, column=1, sticky="w", pady=3)
+        ttk.Label(frame, text="Recommended total length:").grid(row=6, column=0, sticky="w", pady=3)
+        ttk.Label(frame, textvariable=recommendation_var).grid(row=6, column=1, sticky="w", pady=3)
+
+        def format_probability(value):
+            percent = value * 100
+            if percent == 0:
+                return "0%"
+            return f"{percent:.2g}%"
+
+        def recalculate(*_args):
+            try:
+                length = validate_id_total_length(length_var.get())
+                count = int(count_var.get())
+                if count < 0:
+                    raise ValueError
+                target_percent = float(target_var.get())
+                if not 0 < target_percent < 100:
+                    raise ValueError
+                target = target_percent / 100
+                sample_probability_var.set(format_probability(collision_probability(count, length, False)))
+                recommended = recommend_total_length(count, target)
+                recommendation_var.set(str(recommended) if recommended is not None else f">{MAX_ID_TOTAL_LENGTH}")
+            except (TypeError, ValueError):
+                sample_probability_var.set("-")
+                recommendation_var.set("-")
+
+        def save_setting():
+            try:
+                proposed = validate_id_total_length(length_var.get())
+                count = int(count_var.get())
+                if count < 0:
+                    raise ValueError("Anticipated nodes cannot be negative.")
+                target_percent = float(target_var.get())
+                if not 0 < target_percent < 100:
+                    raise ValueError("Maximum collision probability must be greater than 0% and less than 100%.")
+                target = target_percent / 100
+                recommended = recommend_total_length(count, target)
+                if proposed < current_length:
+                    raise ValueError(f"ID length cannot be reduced from {current_length} to {proposed}.")
+
+                if recommended is None:
+                    recommendation_note = "The requested probability requires more than 32 characters."
+                elif proposed < recommended:
+                    recommendation_note = f"The calculated recommendation is {recommended} characters."
+                else:
+                    recommendation_note = f"The calculated recommendation is {recommended} characters."
+
+                if not messagebox.askyesno(
+                    "Confirm ID Length",
+                    f"Set the total length for new node IDs to {proposed} characters?\n(existing IDs will remain unchanged)\n\nThis action cannot be undone.",
+                    parent=dialog,
+                ):
+                    return
+                if not messagebox.askyesno(
+                    "Final Confirmation",
+                    f"Confirm the change from {current_length} to {proposed} characters.\n\n"
+                    "Existing IDs will remain unchanged, and the configured length cannot later be reduced.",
+                    parent=dialog,
+                ):
+                    return
+                set_id_total_length(proposed)
+            except Exception as exc:
+                messagebox.showerror("Identifier Settings", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+
+        length_var.trace_add("write", recalculate)
+        count_var.trace_add("write", recalculate)
+        target_var.trace_add("write", recalculate)
+        recalculate()
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=7, column=0, columnspan=2, sticky="e", pady=(14, 0))
+        ttk.Button(buttons, text="Save", command=save_setting).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="left", padx=4)
+
     def open_backup_settings(self):
         cache = self.load_cache()
         current_backup = cache.get("secondary_backup_path", "")
@@ -1327,6 +1484,13 @@ class SampleTreeGUI:
     def _is_tree_writable(self, system_key):
         info = self.multi_trees.get(system_key)
         return bool(info and not info.get("read_only"))
+
+    @staticmethod
+    def _generate_node_id(tree, sample_class):
+        total_length = get_id_total_length()
+        processing_step = issubclass(sample_class, Processing_Step)
+        existing_ids = (node.identifier for node in tree.all_nodes_itr())
+        return generate_unique_id(existing_ids, total_length, processing_step=processing_step)
 
     def _ensure_tree_writable(self, system_key, action="modify this database"):
         info = self.multi_trees.get(system_key)
@@ -1850,10 +2014,12 @@ class SampleTreeGUI:
         # Paste into all valid destinations
         systems_to_refresh = set()
         last_new_obj = None
+        pasted_count = 0
         for dest_tree, dest_parent_id, dest_system_key in destinations:
             try:
                 # Use clone to duplicate
-                new_obj = self.clipboard_node.clone(**new_props)
+                generated_id = self._generate_node_id(dest_tree, cls)
+                new_obj = self.clipboard_node.clone(_generated_id=generated_id, **new_props)
                 if hasattr(new_obj, "log_keys"):
                     new_obj.log_keys()
             except Exception as e:
@@ -1867,11 +2033,12 @@ class SampleTreeGUI:
             self.unsaved_changes.add(dest_system_key)
             systems_to_refresh.add(dest_system_key)
             last_new_obj = new_obj
+            pasted_count += 1
             
         for system_key in systems_to_refresh:
             self._refresh_after_tree_change(system_key=system_key, focus_node_id=last_new_obj.id if last_new_obj else None)
             
-        self.refresh_status(f"Pasted {class_name} into {len(destinations)} destination(s).")
+        self.refresh_status(f"Pasted {class_name} into {pasted_count} destination(s).")
         
         # Reset copy button and clipboard
         self.clipboard_node = None
@@ -2200,62 +2367,58 @@ class SampleTreeGUI:
             messagebox.showinfo("Info", "No legacy files found in that directory.")
             return
             
-        try:
-            with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
-                schema = json.load(f)
-        except:
-            schema = {}
-
         new_classes = set()
 
-        if os.path.exists(req_props_file):
-            with open(req_props_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or ':' not in line: continue
-                    cls_name, props = line.split(':', 1)
-                    cls_name = cls_name.strip()
-                    keys = [k.strip() for k in props.split(',') if k.strip()]
-                    
-                    if cls_name not in schema:
-                        schema[cls_name] = {"base": "Sample", "required": [], "custom": [], "permitted_children": []}
-                        new_classes.add(cls_name)
-                        
-                    for k in keys:
-                        if k not in schema[cls_name]["required"] and k not in schema[cls_name]["custom"]:
-                            schema[cls_name]["required"].append(k)
+        def apply(schema):
+            if os.path.exists(req_props_file):
+                with open(req_props_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or ':' not in line:
+                            continue
+                        cls_name, props = line.split(':', 1)
+                        cls_name = cls_name.strip()
+                        keys = [k.strip() for k in props.split(',') if k.strip()]
+                        if cls_name.startswith("__"):
+                            continue
+                        if cls_name not in schema:
+                            schema[cls_name] = {"base": "Sample", "required": [], "custom": [], "permitted_children": []}
+                            new_classes.add(cls_name)
+                        for key in keys:
+                            if key not in schema[cls_name]["required"] and key not in schema[cls_name]["custom"]:
+                                schema[cls_name]["required"].append(key)
 
-        if os.path.exists(db_keys_file):
-            with open(db_keys_file, 'r', encoding='utf-8') as f:
-                # We need to sort known schema classes by length descending to match longest prefix
-                known_classes = sorted(schema.keys(), key=len, reverse=True)
-                for line in f:
-                    line = line.strip()
-                    if not line or '_' not in line: continue
-                    
-                    matched_cls = None
-                    matched_prop = None
-                    for k_cls in known_classes:
-                        if line.startswith(k_cls + '_'):
-                            matched_cls = k_cls
-                            matched_prop = line[len(k_cls)+1:]
-                            break
-                            
-                    if not matched_cls:
-                        # Fallback to rsplit
-                        matched_cls, matched_prop = line.rsplit('_', 1)
-                        matched_cls = matched_cls.strip()
-                        matched_prop = matched_prop.strip()
-                        
-                    if matched_cls not in schema:
-                        schema[matched_cls] = {"base": "Sample", "required": [], "custom": [], "permitted_children": []}
-                        new_classes.add(matched_cls)
-                        
-                    if matched_prop not in schema[matched_cls]["required"] and matched_prop not in schema[matched_cls]["custom"]:
-                        schema[matched_cls]["custom"].append(matched_prop)
+            if os.path.exists(db_keys_file):
+                with open(db_keys_file, 'r', encoding='utf-8') as f:
+                    known_classes = sorted(schema_class_names(schema), key=len, reverse=True)
+                    for line in f:
+                        line = line.strip()
+                        if not line or '_' not in line:
+                            continue
+                        matched_cls = None
+                        matched_prop = None
+                        for known_class in known_classes:
+                            if line.startswith(known_class + '_'):
+                                matched_cls = known_class
+                                matched_prop = line[len(known_class) + 1:]
+                                break
+                        if not matched_cls:
+                            matched_cls, matched_prop = line.rsplit('_', 1)
+                            matched_cls = matched_cls.strip()
+                            matched_prop = matched_prop.strip()
+                        if matched_cls.startswith("__"):
+                            continue
+                        if matched_cls not in schema:
+                            schema[matched_cls] = {"base": "Sample", "required": [], "custom": [], "permitted_children": []}
+                            new_classes.add(matched_cls)
+                        if matched_prop not in schema[matched_cls]["required"] and matched_prop not in schema[matched_cls]["custom"]:
+                            schema[matched_cls]["custom"].append(matched_prop)
 
-        with open(DATABASE_STRUCTURE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(schema, f, indent=4)
+        try:
+            update_database_structure(apply)
+        except Exception as exc:
+            messagebox.showerror("Import Failed", f"Could not update database_structure.json:\n{exc}", parent=self.root)
+            return
             
         import database_classes
         if hasattr(database_classes, "create_class_from_schema"):
@@ -2790,7 +2953,7 @@ class SampleTreeGUI:
         else:
             self.class_var.set("")
 
-    def add_child_node(self):
+    def add_child_node(self, proposal=None):
         ctx = self._selected_node_context()
         if not ctx:
             messagebox.showwarning("Select", "Select a parent node first.")
@@ -2799,9 +2962,18 @@ class SampleTreeGUI:
             return
         tree_obj = ctx["tree"]
         parent_id = ctx["node_id"]
-        class_name = self.class_var.get()
+        class_name = proposal.get("class", "") if proposal else self.class_var.get()
         if not class_name:
             messagebox.showwarning("Class", "No child class available.")
+            return
+        permitted = list(self.class_cb["values"])
+        if class_name not in permitted:
+            messagebox.showerror(
+                "TINSEL Proposal",
+                f"{class_name!r} is not a permitted child of {parent_id!r}.\n\n"
+                f"Permitted classes: {', '.join(permitted) or 'none'}",
+                parent=self.root,
+            )
             return
         classes = get_sample_classes()
         cls = classes[class_name]
@@ -2826,13 +2998,22 @@ class SampleTreeGUI:
 
         # Collect existing keys for dropdown
         existing_keys = sorted(set(custom_props))
-        editor = PropertyEditor(self.root, cls, set(existing_keys), required)
+        initial = dict(proposal.get("properties", {})) if proposal else {}
+        if proposal and proposal.get("label"):
+            candidate_keys = set(required) | set(custom_props)
+            for label_key in ("sample_name", "name", "label"):
+                if label_key in candidate_keys and label_key not in initial:
+                    initial[label_key] = proposal["label"]
+                    break
+        editor = PropertyEditor(self.root, cls, set(existing_keys), required,
+                                ok_text="Create Unsaved Node", initial_properties=initial)
         self.root.wait_window(editor)
         if editor.result is None:
             return
         kwargs = editor.result
         try:
-            obj = cls(**kwargs)
+            generated_id = self._generate_node_id(tree_obj, cls)
+            obj = cls(_generated_id=generated_id, **kwargs)
             if hasattr(obj, "log_keys"):
                 obj.log_keys()
         except Exception as e:
@@ -2845,6 +3026,25 @@ class SampleTreeGUI:
         self._refresh_after_tree_change(system_key=ctx["system_key"], focus_node_id=obj.id)
         self.unsaved_changes.add(ctx["system_key"])
         self.refresh_status(f"Added {class_name} node in {os.path.basename(ctx['file'])}.")
+
+    def open_new_child_proposal(self, proposal):
+        """Validate and open an unsaved child form; only Save Tree writes the database."""
+        if not isinstance(proposal, dict):
+            messagebox.showerror("TINSEL Proposal", "The proposal is not a JSON object.", parent=self.root)
+            return
+        parent = str(proposal.get("parent_external_id", "")).strip()
+        ctx = self._selected_node_context()
+        if not ctx or str(ctx.get("node_id", "")) != parent:
+            if not self.select_node_by_id(parent):
+                messagebox.showerror("TINSEL Proposal", f"Proposed parent {parent!r} was not found.", parent=self.root)
+                return
+            ctx = self._selected_node_context()
+        if not ctx:
+            return
+        if not self._ensure_tree_writable(ctx["system_key"], "prepare this proposed child"):
+            return
+        self.populate_child_class_options(ctx["tree"], ctx["node_id"])
+        self.add_child_node(proposal=proposal)
 
     def delete_node(self):
         ctx = self._selected_node_context()
@@ -2904,11 +3104,10 @@ class SampleTreeGUI:
                 # Load node types
                 nodes_types = ['<Any Type>']
                 try:
-                    with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
-                        schema = json.load(f)
-                        for cls_key in schema.keys():
-                            if cls_key not in ['Processing_Step', 'Sample']:
-                                nodes_types.append(cls_key)
+                    schema = load_database_structure()
+                    for cls_key in schema_class_names(schema):
+                        if cls_key not in ['Processing_Step', 'Sample']:
+                            nodes_types.append(cls_key)
                 except Exception:
                     pass
                 nodes_types = sorted(list(set(nodes_types)))
@@ -2919,16 +3118,15 @@ class SampleTreeGUI:
                 def get_schema_keys(class_name=None):
                     keys = set()
                     try:
-                        with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
-                            schema = json.load(f)
-                            if class_name and class_name != "<Any Type>":
-                                config = schema.get(class_name, {})
+                        schema = load_database_structure()
+                        if class_name and class_name != "<Any Type>":
+                            config = schema.get(class_name, {})
+                            keys.update(config.get("required", []))
+                            keys.update(config.get("custom", []))
+                        else:
+                            for _name, config in schema_class_items(schema):
                                 keys.update(config.get("required", []))
                                 keys.update(config.get("custom", []))
-                            else:
-                                for config in schema.values():
-                                    keys.update(config.get("required", []))
-                                    keys.update(config.get("custom", []))
                     except Exception:
                         pass
                     return sorted(list(keys))
@@ -3298,7 +3496,7 @@ def show_callback_exception(exc_type, exc_value, exc_traceback):
     dlg.focus_set()
 
 
-def launch_gui(project=None, hexcode=None):
+def launch_gui(project=None, hexcode=None, new_child_proposal=None):
     if project is None or hexcode is None:
         try:
             import argparse
@@ -3329,7 +3527,8 @@ def launch_gui(project=None, hexcode=None):
     # action = show_discover_properties_window(root)
     # if action == "discover":
     #     discover_required_properties()
-    _app = SampleTreeGUI(root, initial_project=project, initial_hexcode=hexcode)
+    _app = SampleTreeGUI(root, initial_project=project, initial_hexcode=hexcode,
+                         new_child_proposal=new_child_proposal)
     root.mainloop()
 
 

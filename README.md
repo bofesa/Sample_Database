@@ -20,6 +20,7 @@ Sample_Database/
   database_GUI.py               # GUI logic
   database_classes.py           # class model + dynamic JSON generation
   database_lock.py              # per-database locking, fingerprints, and atomic JSON writes
+  id_policy.py                  # ID generation and collision probability calculations
   database_explorer.spec        # PyInstaller spec
   database_structure.json       # MASTER SCHEMA: defines all Sample/Processing classes and permitted children
   databases/                    # active JSON trees
@@ -149,6 +150,7 @@ Place and run it from a working folder that contains (or can create) these along
    - use **Edit Node** on selected items in the bottom action bar
 10. Help & Settings:
    - **Settings -> Auto-Load Databases on Startup**: Toggles whether the app opens your last active workspace automatically.
+   - **Advanced -> Identifier Settings**: Selects the total length used for newly generated node IDs and calculates collision probabilities.
    - **Settings -> Backup Settings**: Setup a secondary folder path to maintain remote/cloud backups.
    - **Help -> Help Documentation**: Provides a quick overview of how the program works via `help.json`.
 
@@ -167,6 +169,14 @@ Locking is maintained through a sidecar file named `.<database-name>.lock` besid
 This protection requires every user to open the same underlying file on a Windows shared or mapped drive. It also works when the same network location has different drive letters on different computers. It cannot reliably coordinate separate local copies that are synchronized later through OneDrive, Dropbox, or similar tools.
 
 If the application cannot create or access the sidecar, it opens the database read-only rather than risking conflicting changes. Before saving, it also checks whether the database changed outside the application. JSON saves use atomic replacement so a failed write does not truncate the previous database file.
+
+## Node ID Length
+
+Use **Advanced -> Identifier Settings** to choose the total character length for newly generated node IDs. The global length is stored as `__settings__.id_total_length` in `database_structure.json`; calculator inputs and results are not saved.
+
+Existing IDs are never changed. Increasing the setting therefore produces a mixed but compatible database in which established six-character IDs remain valid and new nodes use the longer format. Processing-step IDs retain their `P` prefix, which counts toward the selected total length.
+
+The dialog estimates the probability of at least one random duplicate among a user-entered number of sample IDs and recommends a length from that displayed probability. When creating a node, the application checks the generated candidate only against the destination tree already in memory and retries a duplicate. It does not inspect or load other database files, so uniqueness between separate databases remains probabilistic.
 
 ## JSON Tree File Format
 
@@ -207,7 +217,7 @@ Run the automated locking and persistence tests from the project root:
 
 ```powershell
 python -m unittest discover -v
-python -m py_compile database_lock.py database_GUI.py database_classes.py database_explorer.py
+python -m py_compile database_lock.py id_policy.py database_GUI.py database_classes.py database_explorer.py
 ```
 
 

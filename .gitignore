@@ -5,6 +5,9 @@ databases/*
 # Cache file
 .db_cache.json
 
+# Persistent application lock sidecars
+.*.lock
+
 # Python temporary files
 __pycache__/
 scratch/

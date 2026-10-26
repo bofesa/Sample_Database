@@ -2,13 +2,14 @@ import os
 import sys
 import json
 import datetime
-import uuid
 import inspect
 from copy import deepcopy
 import treelib
 import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox, filedialog
 import shutil
+from database_lock import DatabaseFileLock, atomic_write_json
+from id_policy import DEFAULT_ID_TOTAL_LENGTH, generate_random_id, validate_id_total_length
 
 if getattr(sys, "frozen", False):
     # running as exe (PyInstaller)
@@ -20,10 +21,79 @@ else:
 DATABASE_KEYS_FILE = os.path.join(BASE_DIR, "database_keys.txt")
 REQUIRED_PROPERTIES_FILE = os.path.join(BASE_DIR, "required_properties.txt")
 DATABASE_STRUCTURE_FILE = os.path.join(BASE_DIR, "database_structure.json")
+SCHEMA_SETTINGS_KEY = "__settings__"
+
+
+def load_database_structure():
+    if not os.path.exists(DATABASE_STRUCTURE_FILE):
+        default = globals().get("DEFAULT_SCHEMA", {})
+        return deepcopy(default)
+    with open(DATABASE_STRUCTURE_FILE, "r", encoding="utf-8") as stream:
+        data = json.load(stream)
+    if not isinstance(data, dict):
+        raise ValueError("database_structure.json must contain a JSON object.")
+    return data
+
+
+def schema_class_items(schema):
+    return [
+        (name, config)
+        for name, config in schema.items()
+        if name != SCHEMA_SETTINGS_KEY and isinstance(config, dict)
+    ]
+
+
+def schema_class_names(schema):
+    return [name for name, _config in schema_class_items(schema)]
+
+
+def update_database_structure(mutator):
+    """Apply one locked read-modify-write transaction to the structure file."""
+    structure_lock = DatabaseFileLock(DATABASE_STRUCTURE_FILE)
+    if not structure_lock.acquire():
+        raise RuntimeError(structure_lock.reason or "database_structure.json is locked.")
+    try:
+        schema = load_database_structure()
+        original = deepcopy(schema)
+        result = mutator(schema)
+        if schema != original or not os.path.exists(DATABASE_STRUCTURE_FILE):
+            atomic_write_json(DATABASE_STRUCTURE_FILE, schema, indent=4)
+        return result
+    finally:
+        structure_lock.release()
+
+
+def get_id_total_length():
+    schema = load_database_structure()
+    settings = schema.get(SCHEMA_SETTINGS_KEY, {})
+    if settings is None:
+        settings = {}
+    if not isinstance(settings, dict):
+        raise ValueError(f"{SCHEMA_SETTINGS_KEY} must be a JSON object.")
+    return validate_id_total_length(settings.get("id_total_length", DEFAULT_ID_TOTAL_LENGTH))
+
+
+def set_id_total_length(value):
+    new_length = validate_id_total_length(value)
+
+    def apply(schema):
+        settings = schema.setdefault(SCHEMA_SETTINGS_KEY, {})
+        if not isinstance(settings, dict):
+            raise ValueError(f"{SCHEMA_SETTINGS_KEY} must be a JSON object.")
+        current = validate_id_total_length(
+            settings.get("id_total_length", DEFAULT_ID_TOTAL_LENGTH)
+        )
+        if new_length < current:
+            raise ValueError(f"ID length cannot be reduced from {current} to {new_length}.")
+        settings["id_total_length"] = new_length
+        return new_length
+
+    return update_database_structure(apply)
 
 
 class Sample:
     def __init__(self, required_properties=[], **kwargs):
+        generated_id = kwargs.pop("_generated_id", None)
         self.required_properties = required_properties
 
         # Check if all required properties are provided
@@ -69,7 +139,7 @@ class Sample:
         self.date = kwargs.get('date', None)
 
         self.entry_created_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        self.id = self.generate_id()
+        self.id = generated_id if generated_id is not None else self.generate_id()
         self.properties = kwargs  # Custom properties can be added as key=value pairs
         self.log_keys()
 
@@ -82,11 +152,7 @@ class Sample:
         return self._entry_created_date
 
     def generate_id(self):
-        # date_code = self.entry_created_date.strftime('%Y%m%d%H%M%S')
-        unique_hex = uuid.uuid4().hex
-        # Use at least 5 hex digits to make a collision among 1000 random codes very unlikely (less than 1% chance).
-        # If you want extremely low risk (e.g. 1 in a billion), use 6 digits or more.
-        return f"{unique_hex[:6]}"
+        return generate_random_id(DEFAULT_ID_TOTAL_LENGTH, processing_step=False)
     
     def add_property(self, key, value):
         """Add a custom property."""
@@ -95,19 +161,14 @@ class Sample:
     def log_keys(self):
         """Add the keys to a global list"""
         try:
-            with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
-                schema = json.load(f)
             cls_name = self.__class__.__name__
-            if cls_name not in schema:
-                schema[cls_name] = {"required": [], "custom": []}
-            changed = False
-            for key in self.properties.keys():
-                if key not in schema[cls_name]["custom"] and key not in schema[cls_name]["required"] and key != 'date':
-                    schema[cls_name]["custom"].append(key)
-                    changed = True
-            if changed:
-                with open(DATABASE_STRUCTURE_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(schema, f, indent=4)
+            def apply(schema):
+                if cls_name not in schema:
+                    schema[cls_name] = {"required": [], "custom": []}
+                for key in self.properties.keys():
+                    if key not in schema[cls_name]["custom"] and key not in schema[cls_name]["required"] and key != 'date':
+                        schema[cls_name]["custom"].append(key)
+            update_database_structure(apply)
         except Exception:
             pass
 
@@ -127,7 +188,7 @@ class Sample:
         """ return a string that unambiguously describes the object"""
         return f"{self.__class__.__name__}(id={self.id}, created_date={self.entry_created_date}, properties={self.properties})"
     
-    def clone(self, **overrides):
+    def clone(self, _generated_id=None, **overrides):
         """
         Return a new instance of the same class, copying the properties.
         Overrides can be provided to modify properties during the clone.
@@ -137,6 +198,8 @@ class Sample:
         old_date = getattr(self, 'date', None)
         if old_date is not None and 'date' not in overrides:
             new_props['date'] = old_date
+        if _generated_id is not None:
+            new_props["_generated_id"] = _generated_id
         return self.__class__(**new_props)
 
 
@@ -149,6 +212,7 @@ class Sample:
 
 class Processing_Step(Sample):
     def __init__(self, required_properties=[], **kwargs):
+        generated_id = kwargs.pop("_generated_id", None)
         self.required_properties = required_properties
         self.permitted_children = []
 
@@ -174,7 +238,7 @@ class Processing_Step(Sample):
                 del kwargs[prop]
 
         self.entry_created_date = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        self.id = self.generate_id()
+        self.id = generated_id if generated_id is not None else self.generate_id()
         self.properties = kwargs
         self.log_keys()
 
@@ -187,7 +251,7 @@ class Processing_Step(Sample):
         return self._entry_created_date
 
     def generate_id(self):
-        return f"P{uuid.uuid4().hex[:5]}"
+        return generate_random_id(DEFAULT_ID_TOTAL_LENGTH, processing_step=True)
 
     def add_property(self, key, value):
         self.properties[key] = value
@@ -195,19 +259,14 @@ class Processing_Step(Sample):
     def log_keys(self):
         """Add the keys to a global list"""
         try:
-            with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
-                schema = json.load(f)
             cls_name = self.__class__.__name__
-            if cls_name not in schema:
-                schema[cls_name] = {"required": [], "custom": []}
-            changed = False
-            for key in self.properties.keys():
-                if key not in schema[cls_name]["custom"] and key not in schema[cls_name]["required"] and key != 'date':
-                    schema[cls_name]["custom"].append(key)
-                    changed = True
-            if changed:
-                with open(DATABASE_STRUCTURE_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(schema, f, indent=4)
+            def apply(schema):
+                if cls_name not in schema:
+                    schema[cls_name] = {"required": [], "custom": []}
+                for key in self.properties.keys():
+                    if key not in schema[cls_name]["custom"] and key not in schema[cls_name]["required"] and key != 'date':
+                        schema[cls_name]["custom"].append(key)
+            update_database_structure(apply)
         except Exception:
             pass
 
@@ -228,6 +287,9 @@ class Processing_Step(Sample):
 
 
 DEFAULT_SCHEMA = {
+    SCHEMA_SETTINGS_KEY: {
+        "id_total_length": DEFAULT_ID_TOTAL_LENGTH
+    },
     "Sample": {
         "base": None,
         "required": [],
@@ -431,16 +493,12 @@ RESTORED_DEFAULT_SCHEMA = False
 def _generate_dynamic_classes():
     global RESTORED_DEFAULT_SCHEMA
     if not os.path.exists(DATABASE_STRUCTURE_FILE):
-        import json
-        with open(DATABASE_STRUCTURE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(DEFAULT_SCHEMA, f, indent=4)
+        update_database_structure(lambda schema: schema.update(deepcopy(DEFAULT_SCHEMA)))
         RESTORED_DEFAULT_SCHEMA = True
-    import json
     try:
-        with open(DATABASE_STRUCTURE_FILE, 'r', encoding='utf-8') as f:
-            schema = json.load(f)
+        schema = load_database_structure()
             
-        for name, config in schema.items():
+        for name, config in schema_class_items(schema):
             if name in ['Sample', 'Processing_Step']:
                 continue
                 
@@ -453,9 +511,9 @@ def _generate_dynamic_classes():
             req_props = config.get("required", [])
             perm_children = config.get("permitted_children", [])
             
-            def make_init(rp, pc):
+            def make_init(rp, pc, selected_base):
                 def __init__(self, **kwargs):
-                    base_class.__init__(self, required_properties=rp, **kwargs)
+                    selected_base.__init__(self, required_properties=rp, **kwargs)
                     self.permitted_children = pc
                     for prop in rp:
                         if prop in kwargs:
@@ -463,7 +521,7 @@ def _generate_dynamic_classes():
                 return __init__
                 
             new_class = type(name, (base_class,), {
-                "__init__": make_init(req_props, perm_children)
+                "__init__": make_init(req_props, perm_children, base_class)
             })
             new_class.__module__ = __name__
             globals()[name] = new_class
