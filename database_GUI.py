@@ -1292,9 +1292,8 @@ class SampleTreeGUI:
                 ):
                     return
                 if not messagebox.askyesno(
-                    "Final Confirmation",
-                    f"Confirm the change from {current_length} to {proposed} characters.\n\n"
-                    "Existing IDs will remain unchanged, and the configured length cannot later be reduced.",
+                    "Are You Sure?",
+                    "Apply this identifier-length change?",
                     parent=dialog,
                 ):
                     return
@@ -3006,7 +3005,7 @@ class SampleTreeGUI:
                     initial[label_key] = proposal["label"]
                     break
         editor = PropertyEditor(self.root, cls, set(existing_keys), required,
-                                ok_text="Create Unsaved Node", initial_properties=initial)
+                                ok_text="OK", initial_properties=initial)
         self.root.wait_window(editor)
         if editor.result is None:
             return
